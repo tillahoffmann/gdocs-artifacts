@@ -1,0 +1,30 @@
+name: release
+
+# Publishes when package.json names a version that is not on npm yet. A release is a version bump, not a tag.
+on:
+  push:
+    branches: [main]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Required for trusted publishing; npm needs no token.
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24" # npm 11.5+, needed for trusted publishing
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - id: check
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          if npm view "gdocs-artifacts@$version" version >/dev/null 2>&1; then
+            echo "gdocs-artifacts@$version is already published"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.check.outputs.publish
+        run: npm publish

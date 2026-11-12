@@ -1,11 +1,11 @@
 // Docs indexes count UTF-16 code units, like JavaScript string lengths, and a chip takes up one index.
-import { describe, expect, test } from "vitest";
-import { accounts, connect, findText, paragraphs } from "./helpers.js";
+import { expect, test } from "vitest";
+import { connect, describeAccounts, findText, paragraphs } from "./helpers.js";
 
 // An emoji (2 code units), a precomposed é (1), CJK (1 each), and e + combining accent (2).
 const PREFIX = "😀 é 中文 é ";
 
-describe.skipIf(accounts.length === 0).each(accounts)("%s", (account) => {
+describeAccounts((account) => {
   test("indexes match JavaScript string lengths; a chip is one index", async () => {
     const { drive, createDoc, getDoc, update } = await connect(account);
     const { data: about } = await drive.about.get({ fields: "user(emailAddress)" });

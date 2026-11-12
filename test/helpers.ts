@@ -4,7 +4,7 @@
 import { execFile } from "node:child_process";
 import { appendFileSync, existsSync } from "node:fs";
 import { type docs_v1, type drive_v3, google } from "googleapis";
-import { afterAll } from "vitest";
+import { afterAll, describe, test } from "vitest";
 import { authClient, type OAuthClient, signIn } from "../src/auth.js";
 
 const ENV_FILE = ".env";
@@ -19,6 +19,16 @@ const envKey = (account: Account, name: string) => `GDOCS_${account.toUpperCase(
 
 /** Accounts that have an OAuth client configured; tests run once per account. */
 export const accounts = ALL.filter((a) => process.env[envKey(a, "CLIENT_ID")]);
+
+/**
+ * Defines the tests in `fn` once per configured account. Without accounts (as in CI) or with `skip` set, the
+ * tests are reported as skipped rather than failing for lack of a suite.
+ */
+export function describeAccounts(fn: (account: Account) => void, skip?: string) {
+  const reason = skip ?? (accounts.length === 0 ? "no Google accounts in .env" : undefined);
+  if (reason) describe.skip(reason, () => test.skip("skipped", () => {}));
+  else describe.each(accounts)("%s", fn);
+}
 
 export function oauthClient(account: Account): OAuthClient {
   const clientId = process.env[envKey(account, "CLIENT_ID")];

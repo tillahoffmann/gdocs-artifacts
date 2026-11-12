@@ -1,6 +1,6 @@
 // Markdown import through Drive: what create_doc can rely on, and what it must convert itself.
-import { describe, expect, test } from "vitest";
-import { accounts, bodyText, connect, firstTab, paragraph, run } from "./helpers.js";
+import { expect, test } from "vitest";
+import { bodyText, connect, describeAccounts, firstTab, paragraph, run } from "./helpers.js";
 
 const MARKDOWN = `# Heading 1
 
@@ -26,7 +26,7 @@ Some **bold**, *italic*, ~~strike~~, \`code\` and a [link](https://example.com).
 @[Jane Doe](mailto:jane@example.com) ⟦date:2026-12-01⟧
 `;
 
-describe.skipIf(accounts.length === 0).each(accounts)("%s", (account) => {
+describeAccounts((account) => {
   test("text/markdown imports as a Google Doc", async () => {
     const { drive } = await connect(account);
     const { data } = await drive.about.get({ fields: "importFormats" });

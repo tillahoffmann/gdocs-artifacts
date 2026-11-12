@@ -1,7 +1,7 @@
 // What happens to a comment anchor when text at its edges, inside it, or all of it is edited, and when its list
 // item changes nesting level.
-import { describe, expect, test } from "vitest";
-import { accounts, connect, type Doc, findText, firstTab, paragraph, type Request } from "./helpers.js";
+import { expect, test } from "vitest";
+import { connect, type Doc, describeAccounts, findText, firstTab, paragraph, type Request } from "./helpers.js";
 
 /** Text in the first tab's body between two indexes (text runs only). */
 function textAt(doc: Doc, start: number, end: number) {
@@ -59,7 +59,7 @@ const CASES: [string, (a: Range) => Request[], Record<Mode, string[]>][] = [
   ],
 ];
 
-describe.skipIf(accounts.length === 0).each(accounts)("%s", (account) => {
+describeAccounts((account) => {
   for (const mode of ["EDIT", "SUGGEST"] as const) {
     const opts = { mode: mode === "SUGGEST" ? ("SUGGEST" as const) : undefined };
 

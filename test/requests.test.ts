@@ -1,10 +1,10 @@
 // The request shapes the server relies on: revision checks, chips, comments and suggestions.
-import { describe, expect, test } from "vitest";
-import { accounts, bodyText, connect, findText, firstTab, paragraphs, run } from "./helpers.js";
+import { expect, test } from "vitest";
+import { bodyText, connect, describeAccounts, findText, firstTab, paragraphs, run } from "./helpers.js";
 
 const end = { endOfSegmentLocation: {} };
 
-describe.skipIf(accounts.length === 0).each(accounts)("%s", (account) => {
+describeAccounts((account) => {
   test("a write guarded by a stale revision is rejected", async () => {
     const { createDoc, getDoc, update } = await connect(account);
     const id = await createDoc("revision");

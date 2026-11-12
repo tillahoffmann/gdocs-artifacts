@@ -1,16 +1,31 @@
 {
   "name": "gdocs-artifacts",
   "version": "0.0.0",
-  "private": true,
-  "type": "module",
+  "description": "MCP server that lets agents read and edit Google Docs as Markdown, with comments and suggestions",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tillahoffmann/gdocs-artifacts.git"
+  },
+  "homepage": "https://github.com/tillahoffmann/gdocs-artifacts",
+  "bugs": {
+    "url": "https://github.com/tillahoffmann/gdocs-artifacts/issues"
+  },
+  "type": "module",
+  "exports": "./dist/auth.js",
+  "types": "./dist/auth.d.ts",
+  "files": [
+    "dist"
+  ],
   "engines": {
     "node": ">=22"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "lint": "biome check",
-    "test": "vitest run --no-file-parallelism"
+    "test": "vitest run --no-file-parallelism",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "googleapis": "^189.0.0"
