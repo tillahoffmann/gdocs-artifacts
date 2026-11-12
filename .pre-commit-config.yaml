@@ -1,0 +1,29 @@
+# Install once with: pre-commit install
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+  - repo: local
+    hooks:
+      - id: biome
+        name: lint and format (biome)
+        entry: npx biome check --write --no-errors-on-unmatched --files-ignore-unknown=true
+        language: system
+        types_or: [javascript, ts, json]
+      - id: typecheck
+        name: typecheck
+        entry: npm run typecheck
+        language: system
+        pass_filenames: false
+        types_or: [ts]
+      - id: test
+        name: tests (against Google when .env has credentials)
+        entry: npm test
+        language: system
+        pass_filenames: false
+        types_or: [ts, json]
