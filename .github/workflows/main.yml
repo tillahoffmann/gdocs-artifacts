@@ -1,0 +1,20 @@
+name: main
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22" # the oldest supported version
+          cache: npm
+      - run: npm ci
+      # The same hooks as locally. The live tests skip themselves: CI has no Google credentials.
+      - run: pipx run pre-commit run --all-files --show-diff-on-failure
+      - run: npm run build
