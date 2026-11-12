@@ -1,5 +1,6 @@
 // Google OAuth for a Desktop app client: browser sign-in through a loopback redirect with PKCE, and
 // authenticated clients from a stored refresh token. The only scope ever requested is drive.file.
+import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Auth, google } from "googleapis";
@@ -68,4 +69,17 @@ export function authClient({ clientId, clientSecret }: OAuthClient, refreshToken
   const client = new google.auth.OAuth2({ clientId, clientSecret });
   client.setCredentials({ refresh_token: refreshToken });
   return client;
+}
+
+/** Opens a URL in the default browser, if there is one; failures are ignored (the URL is also printed). */
+export function openBrowser(url: string) {
+  const [cmd, ...args] =
+    process.platform === "darwin"
+      ? ["open", url]
+      : process.platform === "win32"
+        ? ["cmd", "/c", "start", "", url]
+        : ["xdg-open", url];
+  spawn(cmd ?? "open", args, { stdio: "ignore", detached: true })
+    .on("error", () => {})
+    .unref();
 }
