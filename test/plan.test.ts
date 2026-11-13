@@ -2,43 +2,38 @@
 import { readFileSync } from "node:fs";
 import type { docs_v1 } from "googleapis";
 import { expect, test } from "vitest";
+import { adopt } from "../src/actions.js";
 import { comparable, load, parse, toDocmd } from "../src/docmd.js";
-import { applyEdits } from "../src/edit.js";
-import type { Atom } from "../src/ir.js";
-import { plan } from "../src/plan.js";
+import { applyEdits, planEdit, threadsOf } from "../src/edit.js";
+import { type Atom, threadKey } from "../src/ir.js";
+import { type Problem, plan } from "../src/plan.js";
+import { docOf } from "./docs.js";
 import type { Doc } from "./helpers.js";
 
 /** Atoms as docmd, for the planner's messages. */
 const asDocmd = (atoms: Atom[]) => comparable([{ id: "", atoms }]).trim();
 const doc = JSON.parse(readFileSync(new URL("fixtures/doc.json", import.meta.url), "utf8")) as Doc;
 // Edits apply to docmd with open threads inline, as read shows it.
-const { segments, threads: anchored } = load(doc);
+const { segments } = load(doc);
 const footnotes = segments.slice(1).map((s) => s.id);
 const basis = toDocmd(segments);
-const threads = anchored.map((t) => ({
-  id: t.comment.commentId ?? "",
-  quote: t.comment.plainTextQuote ?? "",
-  ranges: t.ranges,
-}));
+const known = threadsOf(segments);
 
-const planFor = (markdown: string, allowDetach: string[] = [], suggest = false) =>
-  plan(segments, parse(markdown, footnotes), {
-    suggest,
-    threads,
-    allowDetach,
-    mine: [],
-    docmd: asDocmd,
-  });
+/** Plans the doc's docmd replaced by `markdown`, as the edit tool does. */
+const planFor = (markdown: string, allowDetach = false, suggest = false) =>
+  planEdit(doc, { edits: [{ old: basis, new: markdown }], mode: suggest ? "suggest" : "direct", allowDetach });
 const replace = (old: string, next: string, suggest = false) => {
   expect(basis).toContain(old);
-  return planFor(basis.replace(old, next), [], suggest);
+  return planFor(basis.replace(old, next), false, suggest);
 };
 const suggest = (old: string, next: string) => replace(old, next, true);
 
 test("docmd parses back to what it was rendered from", () => {
   expect(toDocmd(parse(basis, footnotes), {})).toBe(basis);
-  expect(planFor(basis)).toEqual({ requests: [], problems: [] });
-  expect(planFor(basis, [], true)).toEqual({ requests: [], problems: [] });
+  for (const suggest of [false, true]) {
+    const { batch, problems } = planFor(basis, false, suggest);
+    expect({ batch, problems }).toEqual({ batch: [], problems: [] });
+  }
 });
 
 test("replacing a word", () => {
@@ -48,10 +43,11 @@ test("replacing a word", () => {
   ]);
 });
 
-const codes = (p: ReturnType<typeof planFor>) => p.problems.map((x) => x.code);
+const codes = (p: { problems: Problem[] }) => p.problems.map((x) => x.code);
 
 const THREAD = "doco.p09L3euGEQOxA40zwaHU6A";
-const ANCHORED = `{==ship to all workspaces==}{>>c:${THREAD} Test User: Which workspaces first? · Test User: EU first, then US.<<}`;
+const POSTS = "{>>Test User: Which workspaces first?<<}{>>Test User: EU first, then US.<<}";
+const ANCHORED = `{==ship to all workspaces==}${POSTS}`;
 
 test("commented text can be edited, but removing all of it needs allowDetach", () => {
   expect(replace("ship to all workspaces", "ship everywhere").problems).toEqual([]);
@@ -64,37 +60,71 @@ test("commented text can be edited, but removing all of it needs allowDetach", (
   expect(codes(replace("{==ship", "{==now ship"))).toEqual(["comments_read_only"]);
   const replaced = basis.replace("ship to all workspaces", "go everywhere");
   expect(codes(planFor(replaced))).toEqual(["anchors_affected"]);
-  expect(planFor(replaced, [THREAD]).problems).toEqual([]);
-  // With its markup, too.
+  expect(planFor(replaced, true).problems).toEqual([]);
+  // With its markup, too: the thread stays, without its text.
   const removed = basis.replace(`${ANCHORED} `, "");
-  expect(codes(planFor(removed))).toEqual(["comments_read_only", "anchors_affected"]);
-  expect(planFor(removed, [THREAD]).problems).toEqual([]);
+  expect(codes(planFor(removed))).toEqual(["anchors_affected"]);
+  expect(planFor(removed, true).outcome).toEqual(['The comment on "ship to all workspaces" stays, without its text.']);
 });
 
-test("comments are read-only", () => {
-  // Moving an anchor, dropping a thread's markup, adding a thread, removing an unanchored thread.
+/** Plans edits of the docmd as the edit tool does, comments and pending suggestions included. */
+const editing = (old: string, next: string, mode?: "direct") => {
+  expect(basis).toContain(old);
+  return planEdit(doc, { edits: [{ old, new: next }], mode });
+};
+
+test("comments are added, replied to and resolved through edits, and otherwise read-only", () => {
+  // A new comment is on the highlighted text before it; the rest of the edit is planned without it.
+  const added = editing("in Q3", "in {==Q3==}{>>Why *Q3*\\}?<<}");
+  expect(added.comments.map((c) => [c.content, c.on.map((a) => a.key).join("")])).toEqual([["Why *Q3*}?", "Q3"]]);
+  expect(added.batch).toEqual([]);
+  expect(codes(editing("in Q3", "in Q3{>>why?<<}"))).toEqual(["comments_read_only"]);
+  // A reply is a comment after the thread's last, and several are several.
+  const thread = POSTS;
+  const reply = (content: string) => ({ addCommentReply: { commentId: THREAD, post: { content } } });
+  expect(editing(thread, `${thread}{>>Agreed\\}.<<}`).batch).toEqual([reply("Agreed}.")]);
+  expect(editing(`${thread} in Q3`, `${thread}{>>One.<<}{>>Two.<<} in Q3`).batch).toEqual([
+    reply("One."),
+    reply("Two."),
+  ]);
+  const last = "{>>Test User: EU first, then US.<<}";
+  expect(editing(last, `${last}{>>Ok.<<}`).batch).toEqual([reply("Ok.")]);
+  // Read before the last reply came in: a reply still goes after it, and resolving takes it along.
+  const stale = thread.replace(last, "");
+  expect(planEdit(doc, { edits: [{ old: stale, new: `${stale}{>>Ok.<<}` }] }).batch).toEqual([reply("Ok.")]);
+  expect(
+    planEdit(doc, { edits: [{ old: `{==ship to all workspaces==}${stale}`, new: "ship to all workspaces" }] }).batch,
+  ).toEqual([{ addCommentReply: { commentId: THREAD, post: { commentAction: "RESOLVE" } } }]);
+  expect(codes(editing("in Q3", "in {==Q3==}{>>New.<<}{>>Reply.<<}"))).toEqual(["comments_read_only"]);
+  // Removing a thread's markup resolves it; text edits can come with that.
+  expect(editing(ANCHORED, "send to all workspaces", "direct").batch).toEqual([
+    { insertText: { location: { index: 438 }, text: "send" } },
+    { deleteContentRange: { range: { startIndex: 434, endIndex: 438 } } },
+    { addCommentReply: { commentId: THREAD, post: { commentAction: "RESOLVE" } } },
+  ]);
+  // Moving an anchor, or dropping part of a thread's markup.
   expect(codes(replace("{==ship to", "ship {==to"))).toContain("comments_read_only");
-  expect(codes(replace(ANCHORED, "ship to all workspaces"))).toContain("comments_read_only");
-  expect(codes(replace("in Q3", "in {==Q3==}{>>Me: why?<<}"))).toContain("comments_read_only");
-  expect(codes(replace("\n\n{>>c:doco.wY-1dDsUeApJ0aHPsiqZFg Test User: Gone soon.<<}", ""))).toContain(
+  expect(codes(editing(ANCHORED, "{==ship to all workspaces==}"))).toEqual(["comments_read_only"]);
+  // What a thread says can't change: not a comment's text, and no comment can go but with all of it.
+  for (const changed of [
+    ANCHORED.replace("EU first", "US first"),
+    ANCHORED.replace("{>>Test User: EU first, then US.<<}", ""),
+  ])
+    expect(() => applyEdits(basis, [{ old: ANCHORED, new: changed }], known)).toThrow(/^comments_read_only:/);
+  expect(codes(editing(ANCHORED, ANCHORED.replace("{>>Test User: Which", "{>>Test User: When")))).toEqual([
     "comments_read_only",
+  ]);
+  // Old from before a reply came in still matches, and the thread stays as it is.
+  const before = ANCHORED.replace("{>>Test User: EU first, then US.<<}", "");
+  expect(applyEdits(basis, [{ old: `${before} in Q3`, new: `${before} in Q4` }], known)).toContain(
+    `{==ship to all workspaces==}${threadKey(THREAD)} in Q4`,
   );
-  // What a thread says is compared between old and new, so a reply in the meantime doesn't break old.
-  const edit = { old: ANCHORED, new: ANCHORED.replace("EU first", "US first") };
-  expect(() => applyEdits(basis, [edit])).toThrow(/^comments_read_only:/);
-  const stale = ANCHORED.replace(" · Test User: EU first, then US.", "");
-  expect(applyEdits(basis, [{ old: `${stale} in Q3`, new: `${stale} in Q4` }])).toContain(
-    `{==ship to all workspaces==}{>>c:${THREAD}<<} in Q4`,
-  );
-  // A thread shortened to its ID in old can be copied in full into new.
-  const full = ANCHORED.slice(ANCHORED.indexOf("{>>"));
-  expect(applyEdits(basis, [{ old: `{>>c:${THREAD}<<} in Q3`, new: `${full} in Q4` }])).toContain("in Q4");
 });
 
 test("a footnote goes with its reference, and with it the comments in it", () => {
   const unreferenced = basis.replace("footnote[^1]", "footnote");
   expect(codes(planFor(unreferenced))).toEqual(["anchors_affected"]);
-  expect(planFor(unreferenced, ["doco._e6AaL_wIoUwA7KW-htung"]).problems).toEqual([]);
+  expect(planFor(unreferenced, true).problems).toEqual([]);
 });
 
 test("insertions at one index go in in order", () => {
@@ -105,13 +135,33 @@ test("insertions at one index go in in order", () => {
   expect(new Set(requests.map((r) => r.insertText?.location?.index)).size).toBe(1);
 });
 
-test("pending suggestions can't be edited", () => {
+test("pending suggestions are accepted or rejected by removing their markup, and otherwise can't be edited", () => {
+  const choices = (old: string, next: string, mode?: "direct") => {
+    const r = editing(old, next, mode);
+    expect(r.problems).toEqual([]);
+    return r.batch;
+  };
+  const deletion = "{--really --}";
+  const restyled = "{~~important~>**important**~~}";
+  expect(choices(deletion, "")).toEqual([{ acceptSuggestion: { suggestionId: "suggest.kofj33at3kam" } }]);
+  expect(choices(deletion, "really ")).toEqual([{ rejectSuggestion: { suggestionId: "suggest.kofj33at3kam" } }]);
+  expect(choices(restyled, "**important**")).toEqual([{ acceptSuggestion: { suggestionId: "suggest.lelfozq0mw3i" } }]);
+  expect(choices(restyled, "important")).toEqual([{ rejectSuggestion: { suggestionId: "suggest.lelfozq0mw3i" } }]);
+  // The rest is planned on the doc as it is once they're accepted or rejected: "important" is at 529-538 once
+  // "really " (529-536) is gone, and "seat" at 483 once "$20" (475-478) is.
+  expect(choices(`${deletion}${restyled}`, `${restyled} indeed`, "direct")).toEqual([
+    { acceptSuggestion: { suggestionId: "suggest.kofj33at3kam" } },
+    { insertText: { location: { index: 538 }, text: " indeed" } },
+  ]);
+  expect(choices("{~~$20~>$25~~} per seat", "$25 per {~~seat~>user~~}")).toEqual([
+    { acceptSuggestion: { suggestionId: "suggest.2cmsco9u7wix" } },
+    { insertText: { location: { index: 487 }, text: "user" } },
+    { deleteContentRange: { range: { startIndex: 483, endIndex: 487 } } },
+  ]);
+  // Neither accepted nor rejected, or edited.
+  expect(codes(editing(restyled, "*important*"))).toEqual(["anchors_affected"]);
   expect(codes(replace("$25~~}", "$30~~}"))).toEqual(["anchors_affected"]);
-  expect(codes(replace("{--really --}{>>s:suggest.kofj33at3kam<<}", ""))).toEqual(["anchors_affected"]);
-  // A style suggestion, neither what it suggests nor its markup.
-  const restyled = "{~~important~>**important**~~}{>>s:suggest.lelfozq0mw3i<<}";
   expect(codes(replace(restyled, restyled.replace("**important**", "*important*")))).toEqual(["anchors_affected"]);
-  expect(codes(replace(restyled, "important"))).toEqual(["anchors_affected"]);
 });
 
 test("suggestions are written in CriticMarkup, and go where it puts them", () => {
@@ -137,16 +187,15 @@ test("suggestions are written in CriticMarkup, and go where it puts them", () =>
   // At a comment's end, new text goes in first or it would fall outside the comment.
   expect(codes(suggest("all workspaces==}", "all {~~workspaces~>regions~~}==}"))).toEqual(["comments_read_only"]);
   expect(suggest("all workspaces==}", "all {++regions++}{--workspaces--}==}").problems).toEqual([]);
-  // A heading level can't be suggested yet.
+  // A heading level, as a change of the paragraph's Markdown; not outside CriticMarkup.
+  expect(suggest("\n\nBold with a", "\n\n{++## ++}Bold with a").requests.map((r) => Object.keys(r)[0])).toEqual([
+    "updateParagraphStyle",
+  ]);
   expect(codes(suggest("\n\nBold with a", "\n\n# Bold with a"))).toEqual(["unsupported_edit"]);
 });
 
 test("edits can't create chips, or suggestions when written directly", () => {
   expect(codes(replace("per seat.", "per {++new++} seat."))).toEqual(["unsupported_edit"]);
-  // Not with a made-up suggestion ID, nor with one of a pending suggestion.
-  expect(codes(replace("per seat.", "per {--seat--}{>>s:fake<<}."))).toEqual(["unsupported_edit"]);
-  expect(codes(replace("per seat.", "per seat.{>>s:fake style<<}"))).toEqual(["unsupported_edit"]);
-  expect(codes(replace("per seat.", "per {++user++}{>>s:suggest.2cmsco9u7wix<<} seat."))).toEqual(["anchors_affected"]);
   expect(codes(replace("Chips:", "Chips: {{date:2027-01-01}}"))).toEqual(["unsupported_edit"]);
 });
 
@@ -156,110 +205,22 @@ test("a line ending within a paragraph is a space", () => {
 
 // ---- Content the fixture doesn't have ----
 
-type Part = {
-  text?: string;
-  style?: docs_v1.Schema$TextStyle;
-  ins?: string;
-  del?: string;
-  /** A suggested style change: its ID and the fields it sets. */
-  restyle?: [string, docs_v1.Schema$TextStyle];
-  element?: object;
-  /** What a comment on the part says. */
-  comment?: string;
-};
-type Block = { parts: Part[]; level?: number; list?: string; suggested?: string } | { cells: Part[][] };
-
-/** A doc of paragraphs (list items at `level`) and tables of one row. */
-function docOf(blocks: Block[]): Doc {
-  let index = 1;
-  const comments: { id: string; range: docs_v1.Schema$Range; text: string }[] = [];
-  const paragraph = (parts: Part[], extra: docs_v1.Schema$Paragraph = {}) => {
-    const startIndex = index;
-    const elements = [...parts, { text: "\n" }].map(({ text, style, ins, del, restyle, element, comment }: Part) => {
-      const at = index;
-      index += text?.length ?? 1;
-      if (comment)
-        comments.push({ id: `t${comments.length + 1}`, range: { startIndex: at, endIndex: index }, text: comment });
-      const common = {
-        textStyle: style ?? {},
-        ...(ins ? { suggestedInsertionIds: [ins] } : {}),
-        ...(del ? { suggestedDeletionIds: [del] } : {}),
-        ...(restyle
-          ? {
-              suggestedTextStyleChanges: {
-                [restyle[0]]: {
-                  textStyle: restyle[1],
-                  textStyleSuggestionState: Object.fromEntries(
-                    Object.keys(restyle[1]).map((k) => [`${k}Suggested`, true]),
-                  ),
-                },
-              },
-            }
-          : {}),
-      };
-      const [kind, value] = Object.entries(element ?? { textRun: { content: text } })[0] ?? [];
-      return { startIndex: at, endIndex: index, [kind as string]: { ...value, ...common } };
-    });
-    return { startIndex, endIndex: index, paragraph: { elements, ...extra } };
-  };
-  const content: docs_v1.Schema$StructuralElement[] = [{ endIndex: 1, sectionBreak: {} }];
-  for (const block of blocks) {
-    if ("cells" in block) {
-      const startIndex = index;
-      index += 2;
-      const tableCells = block.cells.map((parts) => ({ startIndex: index++, content: [paragraph(parts)] }));
-      index++;
-      content.push({ startIndex, endIndex: index, table: { tableRows: [{ startIndex: startIndex + 1, tableCells }] } });
-    } else
-      content.push(
-        paragraph(block.parts, {
-          ...(block.level !== undefined ? { bullet: { listId: block.list ?? "list", nestingLevel: block.level } } : {}),
-          ...(block.suggested ? { suggestedParagraphStyleChanges: { [block.suggested]: {} } } : {}),
-        }),
-      );
-  }
-  content.push(paragraph([{ text: "end" }]));
-  const commentAnchors = Object.fromEntries(comments.map((c) => [c.id, { ranges: [c.range] }]));
-  return {
-    revisionId: "r",
-    tabs: [
-      {
-        documentTab: {
-          body: { content },
-          commentAnchors,
-          lists: { list: { listProperties: {} }, other: { listProperties: {} } },
-        },
-      },
-    ],
-    comments: comments.map((c) => ({
-      commentId: c.id,
-      anchorId: c.id,
-      status: "OPEN",
-      headPost: { author: { displayName: "Ann" }, content: c.text },
-    })),
-  } as Doc;
-}
-
+/** Plans `edit` of the doc's docmd as the edit tool does, with `mine` the user's own suggestions. */
 const planOn = (d: Doc, edit: (docmd: string) => string = (s) => s, suggest = false, mine: string[] = []) => {
   const { segments, threads } = load(d);
   const docmd = toDocmd(segments);
-  return {
-    docmd,
-    ...plan(
-      segments,
-      parse(
-        edit(docmd),
-        segments.slice(1).map((s) => s.id),
-      ),
-      {
-        suggest,
-        threads: threads.map((t) => ({ id: t.comment.commentId ?? "", quote: "", ranges: t.ranges })),
-        allowDetach: [],
-        mine,
-        docmd: asDocmd,
-      },
-    ),
-  };
+  const edited = parse(
+    applyEdits(edit(docmd), [], threadsOf(segments)),
+    segments.slice(1).map((s) => s.id),
+  );
+  const { requests, problems } = plan(segments, adopt(segments, edited), {
+    suggest,
+    threads: threads.map((t) => ({ id: t.comment.commentId ?? "", quote: "", ranges: t.ranges })),
+    allowDetach: false,
+    mine,
+    docmd: asDocmd,
+  });
+  return { docmd, requests, problems };
 };
 
 test("content without a direct Markdown form parses back to what it was rendered from", () => {
@@ -305,26 +266,26 @@ test("content without a direct Markdown form parses back to what it was rendered
     { cells: [[{ text: "c", comment: "x|y" }, link]] },
   ]);
   const { docmd, ...result } = planOn(d);
-  expect(docmd).toBe(String.raw`a{{br}}{{date:2026-12-01}} b{{br}}
+  expect(docmd).toBe(String.raw`a<br>{{date:2026-12-01}} b<br>
 
 **x{{date:2026-12-01}}**{{date:2026-12-01}}
 
-a{++bc{--d--}{>>s:s2<<}++}{>>s:s1<<}
+a{++bc{--d--}++}
 
-{~~{{}}~~old~~{{}}~>new~~}{>>s:s3<<}
+{~~~~old~~~>new~~}
 
-a{~~ b ~> **b** ~~}{>>s:s4<<}c
+a {~~b~>**b**~~} c
 
-{~~pq~>pq~~}{>>s:s6<<}
+pq
 
-{--x--}{>>s:s5<<}{++x++}{>>s:s5<<}
+{--x--}{++x++}
 
 \@[Bob](mailto:bob@example.com)
 
 - one
   - - three
 
-| {==c==}{>>c:t1 Ann: x\|y<<}{{link:https://drive.google.com/x\|a\|b}} |
+| {==c==}{>>Ann: x\|y<<}{{link:https://drive.google.com/x\|a\|b}} |
 | - |
 
 end
@@ -332,10 +293,16 @@ end
   expect(result).toEqual({ requests: [], problems: [] });
 });
 
-test("a pending paragraph style suggestion keeps its paragraph break", () => {
+test("a pending paragraph style suggestion is a change of the paragraph's line, and keeps its paragraph break", () => {
   const d = docOf([{ parts: [{ text: "Title" }], suggested: "s1" }, { parts: [{ text: "body" }] }]);
-  const { problems } = planOn(d, (s) => s.replace("Title{>>s:s1 style<<}\n\nbody", "Title body"));
+  const line = "{~~Title~>## Title~~}";
+  const { docmd, problems } = planOn(d, (s) => s.replace(`${line}\n\nbody`, `${line} body`), true);
+  expect(docmd).toContain(`${line}\n\nbody`);
   expect(problems.map((p) => p.code)).toEqual(["anchors_affected"]);
+  // Accepted or rejected like any other: by writing the line it suggests, or the line as it is.
+  const choose = (next: string) => planEdit(d, { edits: [{ old: line, new: next }] }).batch;
+  expect(choose("## Title")).toEqual([{ acceptSuggestion: { suggestionId: "s1" } }]);
+  expect(choose("Title")).toEqual([{ rejectSuggestion: { suggestionId: "s1" } }]);
 });
 
 test("a new list item joins its list, or is refused", () => {
@@ -356,7 +323,7 @@ test("a new list item joins its list, or is refused", () => {
 
 test("a new suggestion can't touch one of the user's own, which it would join", () => {
   const d = docOf([{ parts: [{ text: "all " }, { text: "paid ", ins: "s1" }, { text: "workspaces" }] }]);
-  const add = (s: string) => s.replace("<<}workspaces", "<<}{++EU ++}workspaces");
+  const add = (s: string) => s.replace("++}workspaces", "++}{++EU ++}workspaces");
   expect(codes(planOn(d, add, true, ["s1"]))).toEqual(["anchors_affected"]);
   // Someone else's suggestion stays separate.
   expect(planOn(d, add, true).problems).toEqual([]);

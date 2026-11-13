@@ -43,6 +43,7 @@
     "@biomejs/biome": "2.6.7",
     "@types/mdast": "^4.0.4",
     "@types/node": "^26.6.6",
+    "micromark": "^4.0.3",
     "micromark-util-types": "^2.0.3",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"

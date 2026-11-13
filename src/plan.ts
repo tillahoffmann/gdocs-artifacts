@@ -5,7 +5,7 @@
 import { diffArrays, diffLines } from "diff";
 import type { docs_v1 } from "googleapis";
 import { type Atom, isFresh, type Segment, suggestions } from "./ir.js";
-import { MARKS, type Marks, type MarkValue, PARAGRAPH_RULES, type Props } from "./rules.js";
+import { MARKS, type Marks, type MarkValue, PARAGRAPH_RULES, type Props, sameMarks } from "./rules.js";
 
 type Request = docs_v1.Schema$Request;
 type Range = docs_v1.Schema$Range;
@@ -21,20 +21,27 @@ export type PlanOptions = {
   suggest: boolean;
   /** Comment threads anchored in the tab. */
   threads: { id: string; quote: string; ranges: Range[] }[];
-  /** Threads whose text may all go (they stay, unanchored). */
-  allowDetach: string[];
+  /** Whether a thread's text may all go (it stays, unanchored). */
+  allowDetach: boolean;
   /** The pending suggestions the signed-in user made: a new one that touches one of them joins it. */
   mine: string[];
   /** The docmd of atoms, for messages. */
   docmd(atoms: Atom[]): string;
+  /** What a pending suggestion does ("Add: …"), for messages; by default, its ID. */
+  name?(id: string): string;
 };
 
 export type Plan = { requests: Request[]; problems: Problem[] };
 
+/** Detached threads: those whose text all goes, with allowDetach. */
+export type Planned = Plan & { detached: string[] };
+
 /** `next` holds the segments the docmd defines; segments it leaves out are unchanged. */
-export function plan(segments: Segment[], next: Segment[], opts: PlanOptions): Plan {
+export function plan(segments: Segment[], next: Segment[], options: PlanOptions): Planned {
+  const opts = { name: (id: string) => id, ...options };
   const requests: Request[] = [];
   const problems = new Map<string, Problem>();
+  const detached: string[] = [];
   const footnotes = new Map(segments.map((s) => [s.id, s]));
   for (const segment of segments) {
     const edited = next.find((s) => s.id === segment.id);
@@ -42,8 +49,9 @@ export function plan(segments: Segment[], next: Segment[], opts: PlanOptions): P
     const result = planSegment(segment, edited.atoms, opts, footnotes);
     requests.push(...result.requests);
     for (const p of result.problems) problems.set(p.message, p);
+    detached.push(...(result.detached ?? []));
   }
-  return { requests, problems: [...problems.values()] };
+  return { requests, problems: [...problems.values()], detached: [...new Set(detached)] };
 }
 
 // ---- Diffing ----
@@ -171,13 +179,20 @@ type Context = {
   /** Each paragraph end of `next`, numbered in order. */
   ordinal: Map<Atom, number>;
   footnotes: Map<string, Segment>;
-  opts: PlanOptions;
+  opts: Options;
 };
 
 /** Token ranges whose matched atoms a build compares: all of them, or the ones around one hunk. */
 type Window = { o: number; n: number; oEnd: number; nEnd: number };
 
-function planSegment(segment: Segment, edited: Atom[], opts: PlanOptions, footnotes: Map<string, Segment>): Plan {
+type Options = PlanOptions & { name(id: string): string };
+
+function planSegment(
+  segment: Segment,
+  edited: Atom[],
+  opts: Options,
+  footnotes: Map<string, Segment>,
+): Plan & { detached?: string[] } {
   const visible = segment.atoms.filter((a) => !a.hidden);
   const all = segment.atoms.filter((x) => x.kind !== "annotation");
   const ends = all.filter((x) => x.kind === "end");
@@ -187,12 +202,12 @@ function planSegment(segment: Segment, edited: Atom[], opts: PlanOptions, footno
   const problems: Problem[] = [];
   for (const id of ids)
     if (isFresh(id) ? !opts.suggest : !pending.has(id))
-      problems.push({ code: "unsupported_edit", message: isFresh(id) ? DIRECT : `{>>s:${id}<<}: ${UNKNOWN}` });
+      problems.push({ code: "unsupported_edit", message: isFresh(id) ? DIRECT : UNKNOWN });
   if (problems.length) return { requests: [], problems: [...new Map(problems.map((p) => [p.message, p])).values()] };
 
   // As suggestions, the CriticMarkup says what changes; the text the docmd adds (and the formatting it
   // suggests) is planned as if it were written directly.
-  const aligned = opts.suggest ? align(segment, visible, edited, opts.docmd) : undefined;
+  const aligned = opts.suggest ? align(segment, visible, edited, opts) : undefined;
   if (aligned && "problem" in aligned) return { requests: [], problems: [aligned.problem] };
   const next = aligned ? aligned.next : edited;
   const ctx: Context = {
@@ -250,7 +265,7 @@ function align(
   segment: Segment,
   doc: Atom[],
   edited: Atom[],
-  docmd: PlanOptions["docmd"],
+  { docmd, name }: Options,
 ): { next: Atom[]; hunks: Hunk[] } | { problem: Problem } {
   const next: Atom[] = [];
   const hs: (Hunk & { parts: ("ins" | "del")[] })[] = [];
@@ -271,7 +286,7 @@ function align(
     ...x,
     ins: isFresh(x.ins) ? undefined : x.ins,
     del: isFresh(x.del) ? undefined : x.del,
-    ...(x.styleChanges.some(isFresh) ? { styleChanges: [], restyled: undefined } : {}),
+    ...(x.styleChanges.some(isFresh) ? { styleChanges: [], restyled: undefined, reprops: undefined } : {}),
   });
   const same = (d: Atom | undefined, x: Atom) => !!d && diffKey(d) === diffKey(plain(x));
   /** Whether all of the paragraph that `edited[k]` ends is new: inserted, or deleted. */
@@ -302,35 +317,38 @@ function align(
   /** Most likely, an edit that doesn't match the doc where it has a pending suggestion changes that. */
   const mismatch = (d: Atom | undefined, why: string) => {
     const pending = d?.ins ?? d?.del ?? d?.styleChanges[0];
-    return pending ? { problem: suggestionProblem(pending) } : differs(why);
+    return pending ? { problem: suggestionProblem(name(pending)) } : differs(why);
   };
   for (const [k, x] of edited.entries()) {
     const d = doc[v];
     // A new paragraph's break goes with it, unless the doc has a paragraph to put its text in (an empty cell);
     // a deleted paragraph's break goes too, unless it's the last before a table or the segment's end.
     const end = x.kind === "end";
-    if (isFresh(x.ins) || (end && whole(k, "ins") && d?.kind !== "end")) {
+    if ((isFresh(x.ins) && !end) || (end && (isFresh(x.ins) || whole(k, "ins")) && d?.kind !== "end")) {
       add("ins");
       next.push(plain(x));
       continue;
     }
     const removable = !!d && ofKind(following(d), "text", "element", "end");
-    if (isFresh(x.del) || (end && whole(k, "del") && removable)) {
+    if ((isFresh(x.del) && !end) || (end && (isFresh(x.del) || whole(k, "del")) && removable)) {
       if (!same(d, x)) return mismatch(d, "the text in {--…--} isn't the doc's");
       add("del");
       v++;
       continue;
     }
     open = undefined;
+    if (!same(d, x) && (x.kind === "annotation" || d?.kind === "annotation")) return { problem: commentProblem };
     if (!d || !same(d, x)) return mismatch(d, "the text outside CriticMarkup isn't the doc's");
     const restyle = x.styleChanges.some(isFresh);
-    if (x.kind !== "end" && MARKS.some((m) => x.marks[m.name] !== d.marks[m.name]))
+    if (x.kind !== "end" && !sameMarks(x.marks, d.marks))
       return differs(
         restyle ? "the old formatting in {~~…~>…~~} isn't the doc's" : "formatting changed outside CriticMarkup",
       );
     if (end && PARAGRAPH_RULES.some((rule) => !rule.same(d.props ?? { heading: 0 }, x.props ?? { heading: 0 })))
       return { problem: { code: "unsupported_edit", message: PARAGRAPH_SUGGESTION } };
-    next.push(restyle ? { ...plain(x), marks: x.restyled ?? x.marks } : x);
+    // A suggested change of the paragraph's style is written as the style it suggests.
+    if (end && restyle) next.push({ ...plain(x), props: x.reprops ?? x.props });
+    else next.push(restyle ? { ...plain(x), marks: x.restyled ?? x.marks } : x);
     v++;
   }
   if (v < doc.length) return differs("the edit leaves out text of the doc");
@@ -355,18 +373,17 @@ const JOINED_LIST =
   "lists isn't supported yet.";
 const SUGGEST =
   "As suggestions (the default mode), write each change in CriticMarkup: {++added++}, {--removed--}, " +
-  "{~~old~>new~~}, and formatting as {~~word~>**word**~~}, without an ID; the rest stays as read shows it. " +
+  "{~~old~>new~~}, and formatting as {~~word~>**word**~~}; the rest stays as read shows it. " +
   'Pass mode "direct" only if the user asked for direct edits.';
 const DIRECT =
   'CriticMarkup makes suggestions, which mode "direct" doesn\'t: write the change itself, or leave out mode to ' +
   "suggest it.";
-const UNKNOWN =
-  "not a pending suggestion in this tab. Leave pending suggestions with their IDs as they are; new ones have none.";
+const UNKNOWN = "a suggestion that isn't in this tab.";
 const PARAGRAPH_SUGGESTION =
-  "changing a heading or list item can't be suggested yet; new paragraphs and list items can be. Change it " +
-  'with mode "direct" if the user asked for direct edits.';
+  "a heading or list item changed outside CriticMarkup. Suggest it as a change of the whole line: " +
+  "{~~## Title~>### Title~~}, {~~Text~>- Text~~} (on its own, between blank lines).";
 
-function build(ctx: Context, hs: Hunk[], window: Window): Plan & { invalid?: string } {
+function build(ctx: Context, hs: Hunk[], window: Window): Plan & { invalid?: string; detached: string[] } {
   const { segment, visible, next, a, b, all, indexes, position, opts } = ctx;
   const where = (fields: { index?: number; startIndex?: number; endIndex?: number }) => ({
     ...fields,
@@ -382,6 +399,7 @@ function build(ctx: Context, hs: Hunk[], window: Window): Plan & { invalid?: str
   const atomStart = (t: Token[], o: number, atoms: Atom[]) => (o < t.length ? (t[o]?.from ?? 0) : atoms.length);
 
   const problems: Problem[] = [];
+  const detached: string[] = [];
   const pass1: { i: number; k: number; requests: Request[] }[] = [];
   const pass2: Request[] = [];
   let invalid: string | undefined;
@@ -442,9 +460,7 @@ function build(ctx: Context, hs: Hunk[], window: Window): Plan & { invalid?: str
     }
     checkRemoval(removed, ctx, problems);
     if (j > i) gone.push([i, j]);
-    for (const x of deleted)
-      if (x.kind === "annotation" && !(x.thread && opts.allowDetach.includes(x.thread)))
-        problems.push(commentProblem(x.thread));
+    for (const x of deleted) if (x.kind === "annotation") problems.push(commentProblem);
     const outer = before(i);
     const inner = atomAt(j);
     if (
@@ -453,12 +469,12 @@ function build(ctx: Context, hs: Hunk[], window: Window): Plan & { invalid?: str
       inner &&
       ((outer.ins && outer.ins === inner.ins) || (outer.del && outer.del === inner.del))
     )
-      problems.push(suggestionProblem((outer.ins ?? outer.del) as string));
+      problems.push(suggestionProblem(opts.name((outer.ins ?? outer.del) as string)));
     // Docs merges touching suggestions by the same person into one, which would change the pending one.
     if (opts.suggest && (inserted.length || j > i))
       for (const y of [outer, inner]) {
         const id = y?.ins ?? y?.del;
-        if (id && opts.mine.includes(id)) problems.push(joinsProblem(id));
+        if (id && opts.mine.includes(id)) problems.push(joinsProblem(opts.name(id)));
       }
 
     // New text goes in at j, after the text it replaces (a suggested replace can go either way). It takes
@@ -473,10 +489,10 @@ function build(ctx: Context, hs: Hunk[], window: Window): Plan & { invalid?: str
     let text = "";
     for (const x of inserted) {
       // Text of a pending suggestion that isn't in the doc: an edited suggestion.
-      for (const id of [x.ins, x.del]) if (id) problems.push(suggestionProblem(id));
+      for (const id of [x.ins, x.del]) if (id) problems.push(suggestionProblem(opts.name(id)));
       if (x.kind === "text") text += x.key;
       else if (x.kind === "end") text += "\n";
-      else if (x.kind === "annotation") problems.push(commentProblem(x.thread));
+      else if (x.kind === "annotation") problems.push(commentProblem);
       else
         problems.push({
           code: "unsupported_edit",
@@ -560,7 +576,7 @@ function build(ctx: Context, hs: Hunk[], window: Window): Plan & { invalid?: str
         m.name,
         to.marks[m.name] ?? null,
       ]);
-      if (changes.length && suggested) problems.push(suggestionProblem(suggested));
+      if (changes.length && suggested) problems.push(suggestionProblem(opts.name(suggested)));
       const key = JSON.stringify(changes);
       if (run && (run.changes !== key || run.end !== at)) flush();
       if (!changes.length) continue;
@@ -592,7 +608,7 @@ function build(ctx: Context, hs: Hunk[], window: Window): Plan & { invalid?: str
           k = m;
           continue;
         }
-        if (first.suggested) problems.push(suggestionProblem(first.suggested));
+        if (first.suggested) problems.push(suggestionProblem(opts.name(first.suggested)));
         for (; m < ends.length; m++) {
           const e = ends[m] as (typeof ends)[number];
           const alike = rule.same(e.current, first.current) && rule.same(desired(e), desired(first));
@@ -679,29 +695,35 @@ function build(ctx: Context, hs: Hunk[], window: Window): Plan & { invalid?: str
   // A thread may lose some of its text, but not all of it (whitespace aside): then it has no anchor left.
   const isGone = (x: Atom) => gone.some(([i, j]) => (x.index ?? 0) >= i && (x.index ?? 0) < j);
   for (const t of opts.threads) {
-    if (opts.allowDetach.includes(t.id) || t.ranges.some((r) => (r.segmentId ?? "") !== segment.id)) continue;
+    if (t.ranges.some((r) => (r.segmentId ?? "") !== segment.id)) continue;
     const anchored = t.ranges.flatMap((r) =>
       all
         .slice(bound(indexes, r.startIndex ?? 0), bound(indexes, r.endIndex ?? 0))
         .filter((x) => x.kind === "element" || (x.kind === "text" && /\S/u.test(x.key))),
     );
-    if (gone.length && anchored.length && anchored.every(isGone)) problems.push(detachProblem(t));
+    if (gone.length && anchored.length && anchored.every(isGone)) {
+      if (opts.allowDetach) detached.push(t.id);
+      else problems.push(detachProblem(t));
+    }
   }
 
   pass1.sort((x, y) => y.i - x.i || y.k - x.k);
-  return { requests: [...pass1.flatMap((p) => p.requests), ...pass2], problems, invalid };
+  return { requests: [...pass1.flatMap((p) => p.requests), ...pass2], problems, invalid, detached };
 }
 
-const commentProblem = (thread?: string): Problem => ({
+const commentProblem: Problem = {
   code: "comments_read_only",
   message:
-    `comment markup${thread ? ` of thread ${thread}` : ""} can't be added, moved or removed through edits: ` +
-    "keep {==, ==} and {>>c:…<<} where they are (removing all of a thread's text with allowDetach removes its markup too).",
-});
+    "comment markup can't be moved: keep a thread's {==, ==} and comments where they are, or remove them all " +
+    "(and nothing else) to resolve it. A new comment is {==text==}{>>comment<<}; a reply, {>>reply<<} after " +
+    "the thread's last comment.",
+};
 
-const suggestionProblem = (id: string): Problem => ({
+const suggestionProblem = (name: string): Problem => ({
   code: "anchors_affected",
-  message: `pending suggestion ${id}: its text can't be edited; leave it as it is (the doc's editors accept or reject it).`,
+  message:
+    `the pending suggestion "${name}": its text can't be edited. Keep it as it is, or remove its markup to ` +
+    "accept it (keeping its new text) or reject it (keeping the old).",
 });
 
 /** Problems with removing `removed`: pending suggestions and block tokens on it, and what's in the footnotes
@@ -710,13 +732,12 @@ function checkRemoval(removed: Atom[], ctx: Context, out: Problem[]) {
   const { opts } = ctx;
   for (const x of removed) {
     const suggested = x.ins ?? x.del ?? x.styleChanges[0];
-    if (suggested) out.push(suggestionProblem(suggested));
+    if (suggested) out.push(suggestionProblem(opts.name(suggested)));
     const footnote = x.kind === "element" && x.key.startsWith("footnote:") && ctx.footnotes.get(x.key.slice(9));
     if (footnote) {
       checkRemoval(footnote.atoms, ctx, out);
       for (const t of opts.threads)
-        if (t.ranges.some((r) => r.segmentId === footnote.id) && !opts.allowDetach.includes(t.id))
-          out.push(detachProblem(t));
+        if (t.ranges.some((r) => r.segmentId === footnote.id) && !opts.allowDetach) out.push(detachProblem(t));
     }
     if (x.kind === "boundary")
       out.push({
@@ -749,18 +770,17 @@ const replaceAtStart: Problem = {
     "comments at their edges): put it after, as {~~old~>new~~}.",
 };
 
-const joinsProblem = (id: string): Problem => ({
+const joinsProblem = (name: string): Problem => ({
   code: "anchors_affected",
   message:
-    `a new suggestion right next to your own pending suggestion ${id} would join it (Docs merges touching ` +
+    `a new suggestion right next to your own pending suggestion "${name}" would join it (Docs merges touching ` +
     "suggestions by the same person), so they'd be accepted or rejected together. Change text that doesn't " +
-    `touch it, or ask for ${id} to be accepted or rejected first.`,
+    "touch it, or ask for it to be accepted or rejected first.",
 });
 
 const detachProblem = (t: PlanOptions["threads"][number]): Problem => ({
   code: "anchors_affected",
   message:
-    `comment thread ${t.id} on "${t.quote}" would lose all the text it's anchored on. Keep some of that text ` +
-    "(edits within it are fine), or pass the thread ID in allowDetach if the user asked for that text to go " +
-    "(the thread stays, without an anchor).",
+    `the comment on "${t.quote}" would lose all the text it's on. Keep some of that text (edits within it are ` +
+    "fine), or pass allowDetach if the user asked for that text to go (the comment stays, without its text).",
 });
