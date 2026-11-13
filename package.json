@@ -1,6 +1,6 @@
 {
   "name": "gdocs-artifacts",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "MCP server that lets agents read and edit Google Docs as Markdown, with comments and suggestions",
   "license": "Apache-2.0",
   "repository": {
@@ -12,8 +12,6 @@
     "url": "https://github.com/tillahoffmann/gdocs-artifacts/issues"
   },
   "type": "module",
-  "exports": "./dist/auth.js",
-  "types": "./dist/auth.d.ts",
   "files": [
     "dist"
   ],
@@ -28,12 +26,28 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "googleapis": "^189.0.0"
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "diff": "^9.0.0",
+    "googleapis": "^189.0.0",
+    "mdast-util-from-markdown": "^2.1.0",
+    "mdast-util-gfm-footnote": "^2.1.0",
+    "mdast-util-gfm-strikethrough": "^2.0.1",
+    "mdast-util-gfm-table": "^2.0.1",
+    "mdast-util-to-markdown": "^2.2.3",
+    "micromark-extension-gfm-footnote": "^2.1.0",
+    "micromark-extension-gfm-strikethrough": "^2.1.0",
+    "micromark-extension-gfm-table": "^2.1.2",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.7",
+    "@types/mdast": "^4.0.4",
     "@types/node": "^26.6.6",
+    "micromark-util-types": "^2.0.3",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"
+  },
+  "bin": {
+    "gdocs-artifacts": "dist/cli.js"
   }
 }

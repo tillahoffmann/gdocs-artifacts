@@ -1,11 +1,11 @@
 // Test helpers: the test accounts configured in .env, and doc helpers for the live tests against Google.
 // An account without a refresh token signs in through the browser once; the token is saved to .env.
 
-import { execFile } from "node:child_process";
 import { appendFileSync, existsSync } from "node:fs";
-import { type docs_v1, type drive_v3, google } from "googleapis";
+import type { docs_v1, drive_v3 } from "googleapis";
 import { afterAll, describe, test } from "vitest";
-import { authClient, type OAuthClient, signIn } from "../src/auth.js";
+import { type OAuthClient, openBrowser, signIn } from "../src/auth.js";
+import { clients } from "../src/google.js";
 
 const ENV_FILE = ".env";
 if (existsSync(ENV_FILE)) process.loadEnvFile(ENV_FILE);
@@ -37,15 +37,15 @@ export function oauthClient(account: Account): OAuthClient {
   return { clientId, clientSecret };
 }
 
-/** Opens the sign-in URL in the browser (macOS) and says which account to use. */
+/** Opens the sign-in URL in the browser and says which account to use. */
 export function openInBrowser(account: Account, what: string) {
   return (url: string) => {
     console.log(`\n[${account}] ${what} with your ${account} account in the browser:\n${url}\n`);
-    execFile("open", [url]);
+    openBrowser(url);
   };
 }
 
-async function accountAuth(account: Account) {
+async function accountToken(account: Account) {
   const client = oauthClient(account);
   let refreshToken = process.env[envKey(account, "REFRESH_TOKEN")];
   if (!refreshToken) {
@@ -53,39 +53,28 @@ async function accountAuth(account: Account) {
     appendFileSync(ENV_FILE, `${envKey(account, "REFRESH_TOKEN")}=${refreshToken}\n`);
     process.env[envKey(account, "REFRESH_TOKEN")] = refreshToken;
   }
-  return authClient(client, refreshToken);
+  return refreshToken;
 }
 
 /** Docs created by this test file; deleted after its tests. */
 const created: { drive: drive_v3.Drive; id: string }[] = [];
 afterAll(() => Promise.all(created.map(({ drive, id }) => drive.files.delete({ fileId: id }))));
 
-/** Drive client plus doc helpers for one account. */
+/** The server's Docs and Drive clients for one account, plus helpers to create and change docs. */
 export async function connect(account: Account) {
-  const auth = await accountAuth(account);
-  const drive = google.drive({ version: "v3", auth });
-  const docs = google.docs({ version: "v1", auth });
+  const google = clients(oauthClient(account), await accountToken(account));
+  const { drive, docs } = google;
   return {
-    drive,
-    /** Creates a doc, empty or imported from Markdown; it's deleted after the test file finishes. */
-    async createDoc(name: string, markdown?: string) {
+    ...google,
+    /** Creates a doc, empty or imported from Markdown; it's deleted after the test file finishes unless `keep`. */
+    async createDoc(name: string, markdown?: string, { keep = false } = {}) {
       const { data } = await drive.files.create({
         requestBody: { name: `gdocs-artifacts test: ${name}`, mimeType: "application/vnd.google-apps.document" },
         media: markdown === undefined ? undefined : { mimeType: "text/markdown", body: markdown },
         fields: "id",
       });
-      created.push({ drive, id: data.id! });
+      if (!keep) created.push({ drive, id: data.id! });
       return data.id!;
-    },
-    /** The read the server will use: tabs, suggestions inline, comments included. */
-    async getDoc(documentId: string): Promise<Doc> {
-      const { data } = await docs.documents.get({
-        documentId,
-        includeTabsContent: true,
-        suggestionsViewMode: "SUGGESTIONS_INLINE",
-        commentsViewMode: "COMMENTS_VIEW_MODE_INCLUDED",
-      });
-      return data;
     },
     async update(documentId: string, requests: Request[], opts: { mode?: "SUGGEST"; revision?: string } = {}) {
       const { data } = await docs.documents.batchUpdate({
@@ -96,6 +85,8 @@ export async function connect(account: Account) {
     },
   };
 }
+
+export type Api = Awaited<ReturnType<typeof connect>>;
 
 /** The first tab's document tab. */
 export function firstTab(doc: Doc) {

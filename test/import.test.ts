@@ -23,7 +23,7 @@ Some **bold**, *italic*, ~~strike~~, \`code\` and a [link](https://example.com).
 
 {++added++} {==highlight==}{>>a comment<<}
 
-@[Jane Doe](mailto:jane@example.com) ⟦date:2026-12-01⟧
+@[Jane Doe](mailto:jane@example.com) {{date:2026-12-01}}
 `;
 
 describeAccounts((account) => {
@@ -65,7 +65,7 @@ describeAccounts((account) => {
 
     // CriticMarkup and our tokens are not interpreted: no comments, suggestions or chips.
     expect(bodyText(doc)).toContain("{++added++} {==highlight==}{>>a comment<<}");
-    expect(bodyText(doc)).toContain("⟦date:2026-12-01⟧");
+    expect(bodyText(doc)).toContain("{{date:2026-12-01}}");
     expect(doc.comments ?? []).toEqual([]);
     expect(doc.suggestions ?? []).toEqual([]);
     expect(bodyText(doc)).not.toMatch(/\[(person|dateElement)\]/);
