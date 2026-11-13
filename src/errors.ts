@@ -6,7 +6,13 @@ export type ErrorCode =
   | "api_not_enabled"
   | "needs_file_grant"
   | "section_not_found"
-  | "invalid_doc";
+  | "invalid_doc"
+  | "anchor_not_found"
+  | "anchor_ambiguous"
+  | "anchors_affected"
+  | "comments_read_only"
+  | "unsupported_edit"
+  | "revision_conflict";
 
 export class ToolError extends Error {
   constructor(

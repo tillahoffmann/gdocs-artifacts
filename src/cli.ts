@@ -5,7 +5,7 @@ import { stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { google } from "googleapis";
 import { authClient, openBrowser, signIn } from "./auth.js";
-import { CONFIG_DIR, loadClient, saveClient, saveToken } from "./config.js";
+import { CREDENTIALS_FILE, loadClient, saveClient, saveToken } from "./config.js";
 import { notConfigured } from "./errors.js";
 import { serve } from "./server.js";
 
@@ -33,7 +33,7 @@ async function setup() {
   rl.close();
   if (!clientId.endsWith(".apps.googleusercontent.com")) throw new Error("that isn't an OAuth client ID");
   saveClient({ clientId, clientSecret });
-  console.log(`\nSaved to ${CONFIG_DIR}. Next, sign in:  npx gdocs-artifacts auth`);
+  console.log(`\nSaved to ${CREDENTIALS_FILE}. Next, sign in:  npx gdocs-artifacts auth`);
 }
 
 async function auth() {
@@ -43,10 +43,10 @@ async function auth() {
     console.log(`Opening the browser to sign in with Google. If it doesn't open, visit:\n${url}\n`);
     openBrowser(url);
   });
-  saveToken(refreshToken);
+  saveToken(client, refreshToken);
   const drive = google.drive({ version: "v3", auth: authClient(client, refreshToken) });
   const { data } = await drive.about.get({ fields: "user(emailAddress)" });
-  console.log(`Signed in as ${data.user?.emailAddress}. Saved to ${CONFIG_DIR}.`);
+  console.log(`Signed in as ${data.user?.emailAddress}. Saved to ${CREDENTIALS_FILE}.`);
 }
 
 const commands: Record<string, () => Promise<void>> = { setup, auth };

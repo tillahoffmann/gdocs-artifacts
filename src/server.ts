@@ -5,6 +5,7 @@ import type { docs_v1 } from "googleapis";
 import { z } from "zod";
 import { loadClient } from "./config.js";
 import { render } from "./docmd.js";
+import { createDoc, edit } from "./edit.js";
 import { needsFileGrant, notConfigured, ToolError } from "./errors.js";
 import { connect, DocNotFound, docId, grantUrl } from "./google.js";
 
@@ -42,7 +43,8 @@ export async function serve(version: string) {
         "CriticMarkup: {==quoted text==}{>>c:<threadId> Author: text · Author: reply<<}, and {++inserted++}, " +
         "{--deleted--} or {~~old~>new~~} followed by {>>s:<suggestionId><<}. People are @[Name](mailto:email); " +
         "dates, Drive links and dropdowns are {{date:…}}, {{link:<url>|<title>}} and {{dropdown:<title>=<option>}}; " +
-        "anything else without a Markdown form is {{opaque:<kind>:<id>}}. Literal { in doc text is escaped as \\{.",
+        "anything else without a Markdown form is {{opaque:<kind>:<id>}}. A line break within a paragraph is " +
+        "{{br}}. Literal { in doc text is escaped as \\{.",
       inputSchema: {
         doc,
         tab: z.string().optional().describe("Tab ID; defaults to the first tab"),
@@ -121,6 +123,58 @@ export async function serve(version: string) {
         };
         return [JSON.stringify(info, null, 2)];
       }),
+  );
+
+  server.registerTool(
+    "edit",
+    {
+      description:
+        "Edit one tab of a Google Doc by replacing text in its docmd (the Markdown that read returns). Each " +
+        "edit replaces `old`, which must match exactly once (or pass nth), with `new`; edits apply in order. " +
+        "Copy old as read shows it, comment markup included; comments are read-only, so keep {==, ==} and " +
+        "{>>c:…<<} as they are (a thread may be shortened to {>>c:<id><<}). Formatting is Markdown: **bold**, " +
+        "*italic*, ~~strike~~, `code`, [links](url), # headings, new paragraphs and list items. By default " +
+        "changes are suggestions the doc's editors accept or reject, written in CriticMarkup without an ID: " +
+        "{++added++}, {--removed--}, {~~old~>new~~}, and formatting as {~~word~>**word**~~}; a new paragraph " +
+        "or list item is all {++…++}. Text outside the markup stays as read shows it. The doc then reads as " +
+        'written, with IDs on the new suggestions. In mode "direct" (only when the user asked for direct ' +
+        "edits) write the change itself. Leave pending suggestions (with their {>>s:…<<}) as they are. Text " +
+        "with open comments can be edited, but removing all of a thread's text is refused unless allowDetach " +
+        "names the thread (it stays, unanchored); use that only when the user asked for the text to go. " +
+        "Returns the changed lines.",
+      inputSchema: {
+        doc,
+        tab: z.string().optional().describe("Tab ID; defaults to the first tab"),
+        mode: z.enum(["suggest", "direct"]).optional().describe('"suggest" (default) or "direct"'),
+        edits: z
+          .array(
+            z.object({
+              old: z.string().describe("Text to replace, copied from the docmd"),
+              new: z.string().describe("Replacement docmd"),
+              nth: z.number().int().min(1).optional().describe("Which match of old, if it occurs more than once"),
+            }),
+          )
+          .min(1),
+        allowDetach: z.array(z.string()).optional().describe("Comment thread IDs whose text may go"),
+      },
+    },
+    ({ doc: d, ...opts }) => run(() => edit(connect(), docId(d), opts)),
+  );
+
+  server.registerTool(
+    "create_doc",
+    {
+      description:
+        "Create a Google Doc from Markdown (headings, paragraphs, bold, italic, strikethrough, inline code, " +
+        "links, lists, tables). It goes into the gdocs-artifacts folder in the user's My Drive unless " +
+        "folderId is given, and is shared with no one. Returns its URL and doc ID.",
+      inputSchema: {
+        title: z.string().describe("The doc's title"),
+        markdown: z.string().describe("The content"),
+        folderId: z.string().optional().describe("Drive folder ID to create the doc in"),
+      },
+    },
+    ({ title, markdown, folderId }) => run(() => createDoc(connect(), title, markdown, folderId)),
   );
 
   await server.connect(new StdioServerTransport());

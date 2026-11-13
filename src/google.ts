@@ -23,7 +23,7 @@ export class DocNotFound extends Error {
 export function connect() {
   const client = loadClient();
   if (!client) throw notConfigured();
-  const refreshToken = loadToken();
+  const refreshToken = loadToken(client);
   if (!refreshToken) throw notAuthenticated("isn't signed in to Google");
   return clients(client, refreshToken);
 }
@@ -96,7 +96,7 @@ export function grantUrl(client: OAuthClient, docId: string) {
     url = new Promise<string>((resolve, reject) => {
       signIn(client, resolve, { ...PICKER_PARAMS, file_ids: docId })
         // Picking signs in again; keep the newest token.
-        .then(({ refreshToken }) => saveToken(refreshToken))
+        .then(({ refreshToken }) => saveToken(client, refreshToken))
         .catch((e: Error) => {
           console.error(`gdocs-artifacts: picking ${docId} failed: ${e.message}`);
           reject(e);

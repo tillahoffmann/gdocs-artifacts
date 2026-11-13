@@ -182,7 +182,7 @@ Some **bold**, *italic*, **_both_**, ~~strike~~, ${"`"}code${"`"} and a [link wi
 | - | - |
 | 1 | 2 |
 
-Literal: \*stars\* \_under\_ \{\{token}} \{==crit==} \<tag> \~tilde\~ \[brackets] back\slash
+Literal: \*stars\* \_under\_ \{\{token}} \{==crit==\} \<tag> \~tilde\~ \[brackets] back\slash
 
 \# not a heading
 
@@ -194,8 +194,7 @@ Bold with a **trailing space** here.
 
 Spaces at both edges.
 
-line one\
-line two
+line one{{br}}line two
 
 Chips: @[Test User](mailto:test@example.com) {{date:2026-12-01}} {{link:https://docs.google.com/document/d/17WiXL47IJFSgzTREfMWyaSBnbBlFgdw15tRsr3VeXvs/edit|gdocs-artifacts test: render fixture}} {{dropdown:Status=Done}}
 
@@ -207,11 +206,11 @@ Pricing is {~~$20~>$25~~}{>>s:suggest.2cmsco9u7wix<<} per seat.
 
 {++A newly suggested paragraph.++}{>>s:suggest.oztokew7cofb<<}
 
-This is {--really --}{>>s:suggest.kofj33at3kam<<}important{>>s:suggest.lelfozq0mw3i style<<}.
-
-[^1]: A footnote with a {==comment==}{>>c:doco._e6AaL_wIoUwA7KW-htung Test User: In a footnote.<<}.
+This is {--really --}{>>s:suggest.kofj33at3kam<<}{~~important~>**important**~~}{>>s:suggest.lelfozq0mw3i<<}.
 
 {>>c:doco.wY-1dDsUeApJ0aHPsiqZFg Test User: Gone soon.<<}
+
+[^1]: A footnote with a {==comment==}{>>c:doco._e6AaL_wIoUwA7KW-htung Test User: In a footnote.<<}.
 `);
 });
 

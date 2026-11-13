@@ -86,6 +86,8 @@ export async function connect(account: Account) {
   };
 }
 
+export type Api = Awaited<ReturnType<typeof connect>>;
+
 /** The first tab's document tab. */
 export function firstTab(doc: Doc) {
   const tab = doc.tabs?.[0]?.documentTab;
