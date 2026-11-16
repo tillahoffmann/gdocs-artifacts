@@ -17,9 +17,20 @@ import { gfmTableToMarkdown } from "mdast-util-gfm-table";
 import { defaultHandlers, type Options, toMarkdown } from "mdast-util-to-markdown";
 import { adopt } from "./actions.js";
 import { ToolError } from "./errors.js";
-import { type Atom, anchored, fromDoc, isThread, paragraphs, posts, reblocks, restyleKey, type Segment } from "./ir.js";
+import {
+  type Atom,
+  anchored,
+  byline,
+  fromDoc,
+  isThread,
+  paragraphs,
+  posts,
+  reblocks,
+  restyleKey,
+  type Segment,
+} from "./ir.js";
 import { escapeCell, LINE_BREAK, parse, type Reading, readMarkdown, Unsupported, WRAPPERS } from "./parse.js";
-import { isCode, type Marks, type Props, raw, sameMarks } from "./rules.js";
+import { field, isCode, type Marks, type Props, raw, sameMarks } from "./rules.js";
 
 export { parse, Unsupported };
 
@@ -46,7 +57,13 @@ export function load(doc: Doc, opts: RenderOptions = {}) {
   const isFirstTab = !opts.tabId || opts.tabId === doc.tabs?.[0]?.tabProperties?.tabId;
   // Threads whose text was deleted have no anchor left; they go at the end of the first tab.
   const unanchored = isFirstTab && !opts.section ? shown.filter((c) => !threads.some((t) => t.comment === c)) : [];
-  return { tab, threads, segments: fromDoc(tab, threads, unanchored) };
+  const authors = new Map(
+    (doc.suggestions ?? []).flatMap((s) => {
+      const name = s.headPost?.author?.displayName;
+      return s.suggestionId && name ? [[s.suggestionId, name] as const] : [];
+    }),
+  );
+  return { tab, threads, segments: fromDoc(tab, threads, unanchored, authors) };
 }
 
 export function findTab(doc: Doc, tabId?: string): Tab {
@@ -256,6 +273,8 @@ type Item = {
   /** A thread without an anchor, on a line of its own after the body. */
   tail?: boolean;
   block?: boolean;
+  /** Who suggested a block change. */
+  authors?: string[];
   /** The atom of the doc it is, and where it is in the docmd. */
   src?: Atom;
   out?: number;
@@ -332,7 +351,7 @@ function items(atoms: Atom[], body: boolean): Item[] {
       if (reblocked) {
         const unit = `block:${end.styleChanges.join(" ")}`;
         const plain = steps.every((s) => s.note === undefined && !s.unit && s.old && s.new);
-        out.push({ block: true, unit });
+        out.push({ block: true, unit, authors: end.authors });
         if (plain) for (const s of steps) s.unit = unit;
       }
       out.push(...steps);
@@ -575,7 +594,15 @@ type Piece =
   | { kind: "note"; value: string };
 
 /** A change: its steps, and where its atoms are in each reading. */
-type Unit = { id: string; block: boolean; items: Item[]; range: Partial<Record<Side, [number, number]>> };
+type Unit = {
+  id: string;
+  block: boolean;
+  items: Item[];
+  range: Partial<Record<Side, [number, number]>>;
+  authors?: string[];
+  /** The suggestions joined in it, if there are several. */
+  ids?: Set<string>;
+};
 
 /** Markdown's tokens, which the CriticMarkup goes between: an escape, a character reference, a run of the same
  * punctuation (a delimiter), or a character. */
@@ -725,14 +752,23 @@ function flush(
   const text = (side: Side, [from, until]: [number, number]) => texts[side].slice(from, until);
   // The changes, in order: runs of steps of the same suggestion. A deletion after an insertion of the same
   // suggestion is a change of its own; a deletion before one, with it, a substitution.
+  // Docs joins touching suggestions by the same person, so touching changes by the same people are one.
   const units: Unit[] = [];
   const unitOf = new Map<Item, number>();
+  const suggestion = (id?: string) => !!id && !/^(style|same|block):/.test(id);
+  const who = (s?: Item) => s?.src?.authors?.join() ?? "";
   for (const s of region) {
     if (s.note !== undefined) continue;
     const last = units.at(-1);
-    if (last && !s.block && last.id === s.unit && !(s.old && !s.new && last.items.some((x) => x.new && !x.old)))
+    const joins =
+      last?.id === s.unit ||
+      (!!s.unit && !!last?.ids?.has(s.unit)) ||
+      (suggestion(last?.id) && suggestion(s.unit) && !!who(s) && who(last?.items.at(-1)) === who(s));
+    if (last && !s.block && joins && !(s.old && !s.new && last.items.some((x) => x.new && !x.old))) {
       last.items.push(s);
-    else units.push({ id: s.unit ?? "", block: !!s.block, items: s.block ? [] : [s], range: {} });
+      last.ids ??= new Set([last.id]);
+      if (s.unit) last.ids.add(s.unit);
+    } else units.push({ id: s.unit ?? "", block: !!s.block, items: s.block ? [] : [s], range: {}, authors: s.authors });
     unitOf.set(s, units.length - 1);
   }
   for (const u of units)
@@ -923,11 +959,24 @@ function flush(
 
   pos.old = to.old;
   pos.new = to.new;
-  // The docmd, and where each atom is in it.
+  // Who made each change: after it, or after the last of the changes right next to it by the same people.
+  // (A change of only Markdown, where a reading has no atoms, is the region's suggestions'.)
+  const by = (items: Item[]) => items.flatMap((s) => [...(s.authors ?? []), ...(s.src?.authors ?? [])]);
+  const authors = units.map((u) => [
+    ...new Set([...(u.authors ?? []), ...by(u.id || u.items.length ? u.items : region)]),
+  ]);
+  const placed = placeNotes(region, unitOf, pieces, reads, pos, to);
+  // The docmd, and where each atom is in it. (A change in another says who made it after the other.)
   let out = "";
-  for (const p of placeNotes(region, unitOf, pieces, reads, pos, to)) {
+  let depth = 0;
+  for (const [k, p] of placed.entries()) {
     if (p.kind !== "text") {
       out += p.value;
+      const next = placed[k + 1];
+      if (p.kind === "mark" && p.role !== "mid") depth += p.role === "open" ? 1 : -1;
+      const names = p.kind === "mark" && p.role === "close" && !depth ? (authors[p.unit] ?? []) : [];
+      const same = next?.kind === "mark" && next.role === "open" && authors[next.unit]?.join() === names.join();
+      if (!same) for (const name of names) out += `{>>${byline(field(name, ":;"))}<<}`;
       continue;
     }
     const side = p.side === "both" ? "old" : p.side;
@@ -1079,7 +1128,8 @@ export function comparable(segments: Segment[]) {
   return toDocmd(
     segments.map(({ id, atoms }) => ({
       id,
-      atoms: atoms.map((a) => (isThread(a) ? { ...a, nodes: [raw(a.key)] } : a)),
+      // (Not who made the suggestions: what the edit intends can't say.)
+      atoms: atoms.map(({ authors: _, ...a }) => (isThread(a) ? { ...a, nodes: [raw(a.key)] } : a)),
     })),
   );
 }

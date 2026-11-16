@@ -53,6 +53,8 @@ export type Atom = {
   props?: Props;
   /** With style changes on a paragraph end: its properties once they're accepted. */
   reprops?: Props;
+  /** Who suggested the pending suggestions on the atom, in the doc. */
+  authors?: string[];
 };
 
 /** A placeholder ID for a suggestion that docmd adds; it can't be written in docmd. */
@@ -125,8 +127,14 @@ export function anchored(tab: Tab, comments: Comment[]): Thread[] {
   });
 }
 
-/** The tab's atoms, with the given threads as annotations; `unanchored` threads go at the end of the body. */
-export function fromDoc(tab: Tab, threads: Thread[] = [], unanchored: Comment[] = []): Segment[] {
+/** The tab's atoms, with the given threads as annotations; `unanchored` threads go at the end of the body.
+ * `authors` has who made each suggestion, by its ID. */
+export function fromDoc(
+  tab: Tab,
+  threads: Thread[] = [],
+  unanchored: Comment[] = [],
+  authors: ReadonlyMap<string, string> = new Map(),
+): Segment[] {
   const footnotes: string[] = [];
   const ctx: Context = {
     tab,
@@ -148,6 +156,10 @@ export function fromDoc(tab: Tab, threads: Thread[] = [], unanchored: Comment[] 
     ctx.segmentId = id;
     segments.push({ id, atoms: newParagraphs(ctx, structural(ctx, tab.footnotes?.[id]?.content ?? [])) });
   }
+  for (const a of segments.flatMap((s) => s.atoms)) {
+    const names = [...suggestions([a])].flatMap((id) => authors.get(id) ?? []);
+    if (names.length) a.authors = [...new Set(names)];
+  }
   return segments;
 }
 
@@ -168,7 +180,7 @@ type Context = ElementContext & {
  */
 function newParagraphs(ctx: Context, atoms: Atom[]): Atom[] {
   const list = [...paragraphs(atoms)];
-  const text = (content: Atom[]) => content.filter((a) => a.kind !== "annotation");
+  const text = (content: Atom[]) => content.filter((a) => a.kind !== "annotation" && !blank(a));
   list.forEach(({ content, end }, i) => {
     const old = end && ctx.unsuggested.get(end);
     const id = text(content)[0]?.ins;
@@ -176,8 +188,10 @@ function newParagraphs(ctx: Context, atoms: Atom[]): Atom[] {
     let k = i - 1;
     const within = (n: number) => list[n]?.end?.kind === "end" && list[n]?.end?.ins === id;
     while (within(k) && text(list[k]?.content ?? []).every((a) => a.ins === id)) k--;
+    // The first end of the run: the old text's, or a new paragraph's before the others.
+    if (!within(k)) k++;
     const before = list[k]?.end;
-    if (!before || !within(k)) return;
+    if (!before || k >= i || !within(k)) return;
     // (Not where that would make a list item of the old text, or of the new: edits can't split or join list
     // items yet.)
     const changed = reblocks(old, before.props);
@@ -213,17 +227,20 @@ export const posts = (a: Atom) => a.nodes?.flatMap((n) => (n.type === "html" ? [
  * shows (see edit.ts), and the key the thread's annotation compares by. */
 export const threadKey = (id: string) => `\uE000${id}\uE001`;
 
-/** A thread as docmd: each post a comment, `{>>Author: text<<}`; the first says if the thread is resolved. */
+/** The docmd of a comment's author, and of its status if it has one: `@Author` or `@Author; resolved`. */
+export const byline = (name: string, status?: string) => `@${name}${status ? `; ${status}` : ""}`;
+
+/** A thread as docmd: each post a comment, `{>>@Author: text<<}`; the first says if the thread is resolved. */
 function threadAnnotation(c: Comment, index: number): Atom {
   // Posts that only resolve or reopen the thread have no text.
   const posts = [c.headPost, ...(c.replies ?? [])].filter((p) => p?.content);
-  const resolved = c.status === "RESOLVED" ? " (resolved)" : "";
+  const resolved = c.status === "RESOLVED" ? "resolved" : undefined;
   const id = c.commentId ?? "";
   return {
     ...annotation(threadKey(id), index, id),
     nodes: posts.map((p, k) =>
       raw(
-        `{>>${field(`${p?.author?.displayName ?? "Unknown"}${k ? "" : resolved}: ${(p?.content ?? "").replace(/\s*\n\s*/g, " ")}`)}<<}`,
+        `{>>${byline(field(p?.author?.displayName ?? "Unknown", ":;"), k ? undefined : resolved)}: ${field((p?.content ?? "").replace(/\s*\n\s*/g, " "))}<<}`,
       ),
     ),
   };
@@ -308,12 +325,14 @@ function paragraph(ctx: Context, p: docs_v1.Schema$Paragraph, inCell: boolean): 
   // A new paragraph (all its text a suggested insertion) shows with the style changes suggested on it: like
   // those on suggested text, they're part of the suggestion.
   const content = atoms.slice(0, -1);
-  const added = content.length > 0 && content.every((a) => a.ins);
-  end.props = propsOf(ctx, added ? suggestedParagraph(p, content[0]?.ins) : p, inCell, true);
+  // (Whitespace aside: docmd doesn't show it at a paragraph's edges.)
+  const words = content.filter((a) => !blank(a));
+  const added = words.length > 0 && words.every((a) => a.ins);
+  end.props = propsOf(ctx, added ? suggestedParagraph(p, words[0]?.ins) : p, inCell, true);
   if (added && !end.ins) ctx.unsuggested.set(end, propsOf(ctx, p, inCell, false));
   // Paragraph-level suggestions (style or bullet changes), unless the whole paragraph is a suggestion: docmd
   // shows those that change what block the paragraph is (see `reblocks`).
-  const inserted = new Set(atoms.map((a) => a.ins));
+  const inserted = new Set([...words, end].map((a) => a.ins));
   const ids = added
     ? []
     : Object.keys({ ...p.suggestedParagraphStyleChanges, ...p.suggestedBulletChanges }).filter(
@@ -404,6 +423,7 @@ export const restyleKey = (a: Atom) => (a.restyled ? a.styleChanges.join(" ") : 
 /** Fits a paragraph's content to what docmd can show; the doc's formatting stays in `style`. */
 function shape(content: Atom[], end: Atom) {
   hideEdges(content);
+  hideRuns(content);
   const shown = views(content.filter((a) => !a.hidden));
   for (const mark of ["bold", "italic", "strike"]) trimWhitespace(shown, mark);
   // Chips and line breaks aren't text, so they don't show as code.
@@ -510,6 +530,23 @@ function hideEdges(atoms: Atom[]) {
   for (const a of atoms.toReversed()) {
     if (!edge(a)) break;
     a.hidden = true;
+  }
+}
+
+/** Hides all but one space or tab of each run of them outside code: Markdown reads them as one. With every
+ * suggestion accepted, and rejected, the text keeps a space where it had one. */
+function hideRuns(atoms: Atom[]) {
+  const blankText = (a?: Atom) => !!a && !a.hidden && blank(a) && !isCode(a.marks);
+  for (let k = 0; k < atoms.length; ) {
+    let m = k;
+    while (blankText(atoms[m])) m++;
+    const run = atoms.slice(k, m);
+    if (run.length > 1) {
+      const plain = run.find((a) => !a.ins && !a.del);
+      const keep = new Set([plain ?? run.find((a) => !a.ins) ?? run[0], plain ?? run.find((a) => !a.del) ?? run[0]]);
+      for (const a of run) if (!keep.has(a)) a.hidden = true;
+    }
+    k = Math.max(m, k + 1);
   }
 }
 

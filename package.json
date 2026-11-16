@@ -1,6 +1,6 @@
 {
   "name": "gdocs-artifacts",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP server that lets agents read and edit Google Docs as Markdown, with comments and suggestions",
   "license": "Apache-2.0",
   "repository": {

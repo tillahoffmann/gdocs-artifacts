@@ -29,7 +29,8 @@ const replace = (old: string, next: string, suggest = false) => {
 const suggest = (old: string, next: string) => replace(old, next, true);
 
 test("docmd parses back to what it was rendered from", () => {
-  expect(toDocmd(parse(basis, footnotes), {})).toBe(basis);
+  // (Who made a suggestion is the doc's, not the docmd's: parsed, it's no one.)
+  expect(toDocmd(parse(basis, footnotes), {})).toBe(basis.replace(/\{>>@[^:<]*<<\}/g, ""));
   for (const suggest of [false, true]) {
     const { batch, problems } = planFor(basis, false, suggest);
     expect({ batch, problems }).toEqual({ batch: [], problems: [] });
@@ -46,7 +47,7 @@ test("replacing a word", () => {
 const codes = (p: { problems: Problem[] }) => p.problems.map((x) => x.code);
 
 const THREAD = "doco.p09L3euGEQOxA40zwaHU6A";
-const POSTS = "{>>Test User: Which workspaces first?<<}{>>Test User: EU first, then US.<<}";
+const POSTS = "{>>@Test User: Which workspaces first?<<}{>>@Test User: EU first, then US.<<}";
 const ANCHORED = `{==ship to all workspaces==}${POSTS}`;
 
 test("commented text can be edited, but removing all of it needs allowDetach", () => {
@@ -79,6 +80,8 @@ test("comments are added, replied to and resolved through edits, and otherwise r
   expect(added.comments.map((c) => [c.content, c.on.map((a) => a.key).join("")])).toEqual([["Why *Q3*}?", "Q3"]]);
   expect(added.batch).toEqual([]);
   expect(codes(editing("in Q3", "in Q3{>>why?<<}"))).toEqual(["comments_read_only"]);
+  // A new comment is the user's: it can't say it's someone else's.
+  expect(codes(editing("in Q3", "in {==Q3==}{>>@Ann: Why?<<}"))).toEqual(["comments_read_only"]);
   // A reply is a comment after the thread's last, and several are several.
   const thread = POSTS;
   const reply = (content: string) => ({ addCommentReply: { commentId: THREAD, post: { content } } });
@@ -87,7 +90,7 @@ test("comments are added, replied to and resolved through edits, and otherwise r
     reply("One."),
     reply("Two."),
   ]);
-  const last = "{>>Test User: EU first, then US.<<}";
+  const last = "{>>@Test User: EU first, then US.<<}";
   expect(editing(last, `${last}{>>Ok.<<}`).batch).toEqual([reply("Ok.")]);
   // Read before the last reply came in: a reply still goes after it, and resolving takes it along.
   const stale = thread.replace(last, "");
@@ -108,14 +111,14 @@ test("comments are added, replied to and resolved through edits, and otherwise r
   // What a thread says can't change: not a comment's text, and no comment can go but with all of it.
   for (const changed of [
     ANCHORED.replace("EU first", "US first"),
-    ANCHORED.replace("{>>Test User: EU first, then US.<<}", ""),
+    ANCHORED.replace("{>>@Test User: EU first, then US.<<}", ""),
   ])
     expect(() => applyEdits(basis, [{ old: ANCHORED, new: changed }], known)).toThrow(/^comments_read_only:/);
-  expect(codes(editing(ANCHORED, ANCHORED.replace("{>>Test User: Which", "{>>Test User: When")))).toEqual([
+  expect(codes(editing(ANCHORED, ANCHORED.replace("{>>@Test User: Which", "{>>@Test User: When")))).toEqual([
     "comments_read_only",
   ]);
   // Old from before a reply came in still matches, and the thread stays as it is.
-  const before = ANCHORED.replace("{>>Test User: EU first, then US.<<}", "");
+  const before = ANCHORED.replace("{>>@Test User: EU first, then US.<<}", "");
   expect(applyEdits(basis, [{ old: `${before} in Q3`, new: `${before} in Q4` }], known)).toContain(
     `{==ship to all workspaces==}${threadKey(THREAD)} in Q4`,
   );
@@ -153,11 +156,17 @@ test("pending suggestions are accepted or rejected by removing their markup, and
     { acceptSuggestion: { suggestionId: "suggest.kofj33at3kam" } },
     { insertText: { location: { index: 538 }, text: " indeed" } },
   ]);
-  expect(choices("{~~$20~>$25~~} per seat", "$25 per {~~seat~>user~~}")).toEqual([
+  // (A change's author goes with it, or is left out.)
+  expect(choices("{~~$20~>$25~~}{>>@Test User<<} per seat", "$25 per {~~seat~>user~~}")).toEqual([
     { acceptSuggestion: { suggestionId: "suggest.2cmsco9u7wix" } },
     { insertText: { location: { index: 487 }, text: "user" } },
     { deleteContentRange: { range: { startIndex: 483, endIndex: 487 } } },
   ]);
+  // A change's author can go with its markup, or stay.
+  expect(choices("{~~$20~>$25~~}{>>@Test User<<}", "$25")).toEqual([
+    { acceptSuggestion: { suggestionId: "suggest.2cmsco9u7wix" } },
+  ]);
+  expect(choices("{~~$20~>$25~~}", "$20")).toEqual([{ rejectSuggestion: { suggestionId: "suggest.2cmsco9u7wix" } }]);
   // Neither accepted nor rejected, or edited.
   expect(codes(editing(restyled, "*important*"))).toEqual(["anchors_affected"]);
   expect(codes(replace("$25~~}", "$30~~}"))).toEqual(["anchors_affected"]);
@@ -197,6 +206,14 @@ test("suggestions are written in CriticMarkup, and go where it puts them", () =>
 test("edits can't create chips, or suggestions when written directly", () => {
   expect(codes(replace("per seat.", "per {++new++} seat."))).toEqual(["unsupported_edit"]);
   expect(codes(replace("Chips:", "Chips: {{date:2027-01-01}}"))).toEqual(["unsupported_edit"]);
+});
+
+test("a run of spaces shows as one, and goes with it", () => {
+  const d = docOf([{ parts: [{ text: "one  \t two" }] }]);
+  expect(toDocmd(load(d).segments)).toBe("one two\n\nend\n");
+  const edit = (next: string) => planEdit(d, { edits: [{ old: "one two", new: next }], mode: "direct" }).requests;
+  expect(edit("two")).toEqual([{ deleteContentRange: { range: { startIndex: 1, endIndex: 8 } } }]);
+  expect(edit("one")).toEqual([{ deleteContentRange: { range: { startIndex: 4, endIndex: 11 } } }]);
 });
 
 test("a line ending within a paragraph is a space", () => {
@@ -285,7 +302,7 @@ pq
 - one
   - - three
 
-| {==c==}{>>Ann: x\|y<<}{{link:https://drive.google.com/x\|a\|b}} |
+| {==c==}{>>@Ann: x\|y<<}{{link:https://drive.google.com/x\|a\|b}} |
 | - |
 
 end

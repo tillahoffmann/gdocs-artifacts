@@ -138,6 +138,12 @@ export function newPosts(next: Segment[]) {
     const drop = new Set<number>();
     for (const [k, a] of atoms.entries()) {
       if (!isPost(a)) continue;
+      // Posts already in the doc are the threads' (see edit.ts): one with an author that isn't is changed, and
+      // with it the posts after it.
+      if (BYLINE.test(a.key.slice(3))) {
+        if (!BYLINE.test(atoms[k - 1]?.key.slice(3) ?? "")) problem(CHANGED_POST);
+        continue;
+      }
       const content = unescapeField(a.key.slice(3, -3)).trim();
       if (!content) {
         problem("a new comment or reply {>><<} is empty.");
@@ -176,6 +182,13 @@ export function newPosts(next: Segment[]) {
 }
 
 const ofKind = (a: Atom | undefined, ...kinds: Atom["kind"][]) => !!a && kinds.includes(a.kind);
+
+/** The start of a post that's in the doc: `@Author: ` or `@Author; status: `. */
+const BYLINE = /^@(?:\\.|[^\\:;])+(?:; \w+)?: /;
+
+const CHANGED_POST =
+  "the edit changes what a comment in the doc says (one that starts with @Author:), which can't be changed. Write " +
+  "a new comment or reply without the @Author: (it's from you).";
 
 const NEW_COMMENT =
   "a new comment goes right after the text it's on, highlighted within one paragraph: {==text==}{>>comment<<} " +

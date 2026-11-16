@@ -32,13 +32,15 @@ function ours(src: string, side: Side) {
   return toDocmd(asShown(all.map((s) => ({ ...s, atoms: s.atoms.filter((a) => a.kind !== "annotation") }))));
 }
 
-/** HTML, without the paragraphs of a loose list (Docs has no loose lists). */
+/** HTML, without the paragraphs of a loose list (Docs has no loose lists), and with a run of spaces as one
+ * (docmd shows one). */
 const html = (markdown: string) =>
   micromark(markdown, {
     extensions: [gfmStrikethrough({ singleTilde: false }), gfmTable()],
     htmlExtensions: [gfmStrikethroughHtml(), gfmTableHtml()],
   })
     .replace(/<li>\n<p>([\s\S]*?)<\/p>\n<\/li>/g, "<li>$1</li>")
+    .replace(/[ \t]{2,}/g, " ")
     .trim();
 
 const reads = (src: string) => {

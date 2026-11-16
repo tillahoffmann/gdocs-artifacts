@@ -431,8 +431,14 @@ function build(ctx: Context, hs: Hunk[], window: Window): Plan & { invalid?: str
     const first = deleted[0];
     const last = deleted.at(-1);
     if (first && last) {
-      i = first.index ?? 0;
-      j = end(last);
+      // (With the spaces docmd doesn't show next to deleted ones: they read as one.)
+      const hiddenSpace = (x?: Atom) => !!x?.hidden && x.kind === "text" && /^[ \t]$/.test(x.key);
+      let from = position.get(first) ?? 0;
+      let to = position.get(last) ?? 0;
+      if (/^[ \t]$/.test(first.key)) while (hiddenSpace(all[from - 1])) from--;
+      if (/^[ \t]$/.test(last.key)) while (hiddenSpace(all[to + 1])) to++;
+      i = all[from]?.index ?? first.index ?? 0;
+      j = end(all[to] ?? last);
     } else {
       // After text, right after it; else at the next visible atom, or for new paragraphs at the start of the
       // next paragraph (which can be a hidden empty one, such as before a table).

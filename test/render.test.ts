@@ -200,25 +200,26 @@ Chips: @[Test User](mailto:test@example.com) {{date:2026-12-01}} {{link:https://
 
 Opaque: image {{opaque:inlineObjectElement:kix.6bppohf4ny26}} footnote[^1] page break{{opaque:pageBreak}}
 
-We will {==ship to all workspaces==}{>>Test User: Which workspaces first?<<}{>>Test User: EU first, then US.<<} in Q3.
+We will {==ship to all workspaces==}{>>@Test User: Which workspaces first?<<}{>>@Test User: EU first, then US.<<} in Q3.
 
-Pricing is {~~$20~>$25~~} per seat.
+Pricing is {~~$20~>$25~~}{>>@Test User<<} per seat.
 
-{++A newly suggested paragraph.++}
+{++A newly suggested paragraph.++}{>>@Test User<<}
 
-This is {--really --}{~~important~>**important**~~}.
+This is {--really --}{~~important~>**important**~~}{>>@Test User<<}.
 
-{>>Test User: Gone soon.<<}
+{>>@Test User: Gone soon.<<}
 
-[^1]: A footnote with a {==comment==}{>>Test User: In a footnote.<<}.
+[^1]: A footnote with a {==comment==}{>>@Test User: In a footnote.<<}.
 `);
 });
 
 test("comments: all includes resolved threads, none drops them", () => {
   expect(render(doc(), { comments: "all" })).toContain(
-    "in {==Q3==}{>>Test User (resolved): Is Q3 firm?<<}{>>Test User: Yes.<<}.",
+    "in {==Q3==}{>>@Test User; resolved: Is Q3 firm?<<}{>>@Test User: Yes.<<}.",
   );
   const none = render(doc(), { comments: "none" });
   expect(none).toContain("We will ship to all workspaces in Q3.\n");
-  expect(none).not.toContain("{>>");
+  // (Suggestions still say who made them.)
+  expect(none).not.toMatch(/\{>>@[^<]*: /);
 });

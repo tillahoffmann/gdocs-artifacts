@@ -1,12 +1,14 @@
 // docmd reads back as what it was rendered from: rendered docmd parses to the same atoms, and an edit that leaves
-// it as it is plans nothing. Checked on shapes that are easy to get wrong, and on random docs.
+// it as it is plans nothing; and docs that differ only in what docmd doesn't show (whitespace, empty paragraphs,
+// how text is split in runs and suggestions) have the same docmd. Checked on shapes that are easy to get wrong,
+// and on random docs.
 import { describe, expect, test } from "vitest";
 import { adopt } from "../src/actions.js";
 import { load, parse, renderTab, shownAs } from "../src/docmd.js";
 import { planEdit } from "../src/edit.js";
 import { type Block, docOf } from "./docs.js";
 import type { Doc } from "./helpers.js";
-import { randomDoc } from "./random.js";
+import { docFor, IRRELEVANT, random, randomBlocks, randomDoc } from "./random.js";
 
 /** The doc's docmd, after checking that it reads back as the doc and that leaving it as it is plans nothing. */
 function roundTrip(doc: Doc) {
@@ -178,7 +180,7 @@ describe("each reading of the docmd is the serializer's Markdown of it", () => {
           ].map((p) => ({ ...p, style: CODE })),
         },
       ],
-      "{=={~~`ab`~>`abc`~~}==}{>>Ann: Why?<<}",
+      "{=={~~`ab`~>`abc`~~}==}{>>@Ann: Why?<<}",
     ],
   ])("%s", (_, blocks, expected) => {
     expect(roundTrip(docOf(blocks)).docmd).toBe(expected);
@@ -190,9 +192,30 @@ describe("each reading of the docmd is the serializer's Markdown of it", () => {
     const { docmd, opaque } = roundTrip(
       docOf([{ parts: [{ text: "ab", del: "s1", comment: "Why?" }], heading: 2, suggested: { id: "s1", heading: 0 } }]),
     );
-    expect(docmd).toBe("## {{opaque:paragraph:ab}}{>>Ann: Why?<<}");
+    expect(docmd).toBe("## {{opaque:paragraph:ab}}{>>@Ann: Why?<<}");
     expect(opaque).toHaveLength(1);
   });
+});
+
+test("a suggestion says who made it, once for changes next to each other by the same people", () => {
+  const doc = docOf([
+    {
+      parts: [
+        { text: "a" },
+        { text: "b", ins: "s1" },
+        { text: "c", del: "s2" },
+        { text: " d" },
+        { text: "e", ins: "s3" },
+        { text: "f", del: "s1" },
+        { text: " g", restyle: ["s2", { bold: true }] },
+      ],
+    },
+  ]);
+  const by = (suggestionId: string, displayName: string) => ({ suggestionId, headPost: { author: { displayName } } });
+  doc.suggestions = [by("s1", "Ann Kim"), by("s2", "Ann Kim"), by("s3", "Bob: B; Lee")];
+  expect(roundTrip(doc).docmd).toBe(
+    "a{++b++}{--c--}{>>@Ann Kim<<} d{++e++}{>>@Bob\\: B\\; Lee<<}{--f--}{>>@Ann Kim<<} {~~g~>**g**~~}{>>@Ann Kim<<}",
+  );
 });
 
 test("random docs read back as themselves", () => {
@@ -205,4 +228,17 @@ test("random docs read back as themselves", () => {
   }
   // The random docs have far more suggestions in code than docs do; still, few paragraphs are tokens.
   expect(opaque / paragraphs).toBeLessThan(0.02);
+});
+
+test("docs that differ only in what docmd doesn't show have the same docmd", () => {
+  const docmd = (doc: Doc) => renderTab(load(doc).segments).docmd;
+  for (let seed = 1; seed <= 300; seed++) {
+    const blocks = randomBlocks(seed, 6);
+    const expected = docmd(docFor(blocks, seed));
+    for (const [change, apply] of Object.entries(IRRELEVANT)) {
+      const changed = structuredClone(blocks);
+      if (apply(changed, random(seed * 31 + change.length)))
+        expect(docmd(docFor(changed, seed)), `${change}, seed ${seed}`).toBe(expected);
+    }
+  }
 });

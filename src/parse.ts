@@ -400,6 +400,9 @@ const READS_DIFFERENTLY =
   "{~~## Title~>### Title~~}.";
 
 /** The two readings as one: atoms in both are the doc's, the others are suggested insertions and deletions. */
+/** A comment that only names its author: `{>>@Name<<}`. */
+const AUTHOR = /^\{>>@(?:\\.|[^\\:;<])+<<\}$/;
+
 function merge(old: Reading, next: Reading, { changes, notes }: Scan, src: string): Segment[] {
   let count = 0;
   const ids = new Map<Change, string>();
@@ -554,8 +557,12 @@ function merge(old: Reading, next: Reading, { changes, notes }: Scan, src: strin
   for (const props of accepted)
     if (props.list) props.list = { ...props.list, id: lists.get(props.list.id) ?? props.list.id };
 
-  // Comment markup goes where it is in the source: in the footnote it's in, before the atom after it.
+  // Comment markup goes where it is in the source: in the footnote it's in, before the atom after it. A
+  // change's authors, {>>@Name<<} after it, only say who made it: they're not part of the doc, and stay or go
+  // with it (but for one right after a highlight, which would be a new comment).
+  const authorship = new Set(notes.filter((n) => AUTHOR.test(n.value) && !src.startsWith("==}", n.at - 3)));
   for (const n of notes) {
+    if (authorship.has(n)) continue;
     const footnote = [...old.spans, ...next.spans].find(([, [from, to]]) => n.at >= from && n.at < to)?.[0];
     const segment = segments.find((s) => s.id === (footnote ?? "")) ?? segments[0];
     if (!segment) continue;
