@@ -55,6 +55,12 @@ export const MARKS: MarkRule[] = [
   },
 ];
 
+/** Whether two atoms' formatting is the same, as far as docmd shows it. */
+export const sameMarks = (a: Marks = {}, b: Marks = {}) => MARKS.every((m) => a[m.name] === b[m.name]);
+
+/** Whether the marks are code's. */
+export const isCode = (marks: Marks) => MARKS.some((m) => m.mdast === "inlineCode" && marks[m.name]);
+
 export function readMarks(ts: TextStyle = {}): Marks {
   const marks: Marks = {};
   for (const m of MARKS) {
@@ -77,6 +83,8 @@ export type ElementRule = {
 /** Backslash-escapes `\`, `}` and the given characters in a token or comment field. */
 export const field = (s: string, extra = "") =>
   s.replace(new RegExp(`[\\\\}${extra.replace(/./g, "\\$&")}]`, "g"), "\\$&");
+/** Text written with `field`. */
+export const unescapeField = (s: string) => s.replace(/\\(.)/g, "$1");
 export const raw = (value: string): Html => ({ type: "html", value });
 const token = (t: string) => ({ key: t, nodes: [raw(t)] });
 

@@ -182,7 +182,7 @@ Some **bold**, *italic*, **_both_**, ~~strike~~, ${"`"}code${"`"} and a [link wi
 | - | - |
 | 1 | 2 |
 
-Literal: \*stars\* \_under\_ \{\{token}} \{==crit==\} \<tag> \~tilde\~ \[brackets] back\slash
+Literal: \*stars\* \_under\_ \{\{token}} \{==crit==\} \<tag> \~tilde\~ \[brackets] back\\slash
 
 \# not a heading
 
@@ -194,31 +194,32 @@ Bold with a **trailing space** here.
 
 Spaces at both edges.
 
-line one{{br}}line two
+line one<br>line two
 
 Chips: @[Test User](mailto:test@example.com) {{date:2026-12-01}} {{link:https://docs.google.com/document/d/17WiXL47IJFSgzTREfMWyaSBnbBlFgdw15tRsr3VeXvs/edit|gdocs-artifacts test: render fixture}} {{dropdown:Status=Done}}
 
 Opaque: image {{opaque:inlineObjectElement:kix.6bppohf4ny26}} footnote[^1] page break{{opaque:pageBreak}}
 
-We will {==ship to all workspaces==}{>>c:doco.p09L3euGEQOxA40zwaHU6A Test User: Which workspaces first? · Test User: EU first, then US.<<} in Q3.
+We will {==ship to all workspaces==}{>>@Test User: Which workspaces first?<<}{>>@Test User: EU first, then US.<<} in Q3.
 
-Pricing is {~~$20~>$25~~}{>>s:suggest.2cmsco9u7wix<<} per seat.
+Pricing is {~~$20~>$25~~}{>>@Test User<<} per seat.
 
-{++A newly suggested paragraph.++}{>>s:suggest.oztokew7cofb<<}
+{++A newly suggested paragraph.++}{>>@Test User<<}
 
-This is {--really --}{>>s:suggest.kofj33at3kam<<}{~~important~>**important**~~}{>>s:suggest.lelfozq0mw3i<<}.
+This is {--really --}{~~important~>**important**~~}{>>@Test User<<}.
 
-{>>c:doco.wY-1dDsUeApJ0aHPsiqZFg Test User: Gone soon.<<}
+{>>@Test User: Gone soon.<<}
 
-[^1]: A footnote with a {==comment==}{>>c:doco._e6AaL_wIoUwA7KW-htung Test User: In a footnote.<<}.
+[^1]: A footnote with a {==comment==}{>>@Test User: In a footnote.<<}.
 `);
 });
 
 test("comments: all includes resolved threads, none drops them", () => {
   expect(render(doc(), { comments: "all" })).toContain(
-    "in {==Q3==}{>>c:doco.pi08HFI3PqJbWPSQmgt23Q resolved · Test User: Is Q3 firm? · Test User: Yes.<<}.",
+    "in {==Q3==}{>>@Test User; resolved: Is Q3 firm?<<}{>>@Test User: Yes.<<}.",
   );
   const none = render(doc(), { comments: "none" });
   expect(none).toContain("We will ship to all workspaces in Q3.\n");
-  expect(none).not.toContain("{>>c:");
+  // (Suggestions still say who made them.)
+  expect(none).not.toMatch(/\{>>@[^<]*: /);
 });

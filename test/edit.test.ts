@@ -1,7 +1,7 @@
 // Edits end to end: planned from docmd, written to a real doc, and read back.
 import { expect, test } from "vitest";
 import { comparable, load, parse, render, toDocmd } from "../src/docmd.js";
-import { applyEdits, createDoc, type Edit, edit } from "../src/edit.js";
+import { applyEdits, createDoc, type Edit, edit, threadsOf } from "../src/edit.js";
 import { asShown, type Segment } from "../src/ir.js";
 import { type Api, connect, type Doc, describeAccounts, findText } from "./helpers.js";
 
@@ -34,11 +34,11 @@ const EDITS = [
   { old: "Last paragraph.", new: "Start: last paragraph, with a [link](https://example.com).\n\n1. x\n2. y" },
 ];
 
-// The same changes as suggestions, except the heading level, which can't be suggested yet.
+// The same changes as suggestions.
 const SUGGESTIONS = [
   { old: "{==ship to all workspaces==}", new: "{=={~~ship~>send~~} to {++every workspace++}{--all workspaces--}==}" },
   { old: "**bold** and plain", new: "**bold**{++ words++} and {~~plain~>*plain*~~}" },
-  { old: "## Section", new: "## Section\n\n{++New paragraph under the heading.++}" },
+  { old: "## Section", new: "{~~## Section~>### Section~~}\n\n{++New paragraph under the heading.++}" },
   { old: "- two", new: "- two\n- {++three++}" },
   { old: "| 1 | 2 |", new: "| 1 | {~~2~>`two`~~} |" },
   {
@@ -55,7 +55,7 @@ const shown = (doc: Doc) => compared(load(doc).segments);
 function intended(doc: Doc, edits: Edit[], then = (segments: Segment[]) => segments) {
   const { segments } = load(doc);
   const footnotes = segments.slice(1).map((s) => s.id);
-  return compared(asShown(then(parse(applyEdits(toDocmd(segments), edits), footnotes))));
+  return compared(asShown(then(parse(applyEdits(toDocmd(segments), edits, threadsOf(segments)), footnotes))));
 }
 
 /** The segments with their suggestions accepted. */
@@ -64,7 +64,12 @@ const accepted = (segments: Segment[]) =>
     ...s,
     atoms: s.atoms
       .filter((a) => !a.del)
-      .map(({ ins: _, restyled, ...a }) => ({ ...a, marks: restyled ?? a.marks, styleChanges: [] })),
+      .map(({ ins: _, restyled, reprops, ...a }) => ({
+        ...a,
+        marks: restyled ?? a.marks,
+        props: reprops ?? a.props,
+        styleChanges: [],
+      })),
   }));
 
 /** A doc from MARKDOWN with a comment on "ship to all workspaces". */
@@ -117,6 +122,40 @@ describeAccounts((account) => {
     expect(shown(await api.getDoc(id))).toEqual(expected);
   });
 
+  test("comments are added, replied to and resolved, and suggestions accepted and rejected, through edits", async () => {
+    const api = await connect(account);
+    const id = await commentedDoc(api, "edit comments");
+    const thread = (await api.getDoc(id)).comments?.[0]?.commentId;
+    const first = render(await api.getDoc(id)).match(/\{==ship to all workspaces==\}(\{>>[^<]*<<\})/)?.[1] ?? "";
+    await edit(api, id, {
+      edits: [
+        { old: "Intro with", new: "Intro {++now ++}with" },
+        { old: "Last paragraph.", new: "{--Last--} paragraph." },
+        { old: first, new: `${first}{>>Done.<<}` },
+      ],
+    });
+    const before = render(await api.getDoc(id));
+    const posts = before.match(/\{==ship to all workspaces==\}((?:\{>>[^<]*<<\})+)/)?.[1] ?? "";
+    expect(posts).toMatch(/: Which first\?<<\}\{>>[^<]*: Done\.<<\}$/);
+    const out = await edit(api, id, {
+      edits: [
+        { old: "{++now ++}", new: "now " },
+        { old: "{--Last--}", new: "Last" },
+        { old: `{==ship to all workspaces==}${posts}`, new: "ship to all workspaces" },
+        { old: "plain text", new: "{==plain text==}{>>Why plain?<<}" },
+      ],
+    });
+    expect(out.join("\n")).not.toMatch(/doesn't read as intended|wasn't added/);
+    const doc = await api.getDoc(id);
+    const after = render(doc);
+    expect(after).toMatch(/Intro now with \*\*bold\*\* and \{==plain text==\}\{>>[^<]*: Why plain\?<<\}\./);
+    expect(after).toContain("Commented: ship to all workspaces now.");
+    expect(after).toContain("\nLast paragraph.");
+    const resolved = doc.comments?.find((c) => c.commentId === thread);
+    expect(resolved?.status).toBe("RESOLVED");
+    expect(resolved?.replies?.map((r) => r.content)).toContain("Done.");
+  });
+
   test("removing commented text is refused and changes nothing", async () => {
     const api = await connect(account);
     const id = await api.createDoc("edit refused", MARKDOWN);
@@ -124,9 +163,9 @@ describeAccounts((account) => {
       { insertComment: { content: "Why plain?", range: findText(await api.getDoc(id), "plain") } },
     ]);
     const before = render(await api.getDoc(id));
-    const old = before.match(/and \{==plain==\}\{>>c:.*?<<\} text/)?.[0] ?? "";
+    const old = before.match(/and \{==plain==\}\{>>.*?<<\} text/)?.[0] ?? "";
     const removed = old.replace("{==plain==}", "{=={--plain--}==}");
-    await expect(edit(api, id, { edits: [{ old, new: removed }] })).rejects.toThrow(/comment thread .* on "plain"/);
+    await expect(edit(api, id, { edits: [{ old, new: removed }] })).rejects.toThrow(/comment on "plain"/);
     expect(render(await api.getDoc(id))).toBe(before);
   });
 });

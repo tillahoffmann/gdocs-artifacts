@@ -1,7 +1,6 @@
-// docmd's own inline syntax for the Markdown parser: CriticMarkup ({++, ++}, {--, --}, {~~, ~>, ~~}, {==, ==},
-// {>>…<<}) and {{…}} tokens. Each becomes an mdast `html` node holding its source, as the renderer emits them.
-// The renderer escapes every literal `{`, a `}` after + - ~ =, and a `>` after ~, so doc text never parses as
-// one of these.
+// docmd's {{…}} tokens for the Markdown parser: each becomes an mdast `html` node holding its source, as the
+// renderer emits them. (CriticMarkup is read before Markdown, as its spec says; see critic.ts.) The renderer
+// escapes every literal `{`, so doc text never parses as one.
 import type { Extension as FromMarkdownExtension } from "mdast-util-from-markdown";
 import type { Code, Construct, Extension, State } from "micromark-util-types";
 
@@ -16,32 +15,8 @@ const BACKSLASH = 92;
 const CLOSE_BRACE = 125;
 const isLineEnding = (c: Code) => c === null || c === -5 || c === -4 || c === -3;
 
-/** An exact sequence, such as `{++` or `~>`. */
-function sequence(s: string): Construct {
-  const codes = code(s);
-  return {
-    name: "docmdSequence",
-    add: "before",
-    tokenize(effects, ok, nok) {
-      let i = 0;
-      const next: State = (c) => {
-        if (i === codes.length) {
-          effects.exit("docmdMarkup");
-          return ok(c);
-        }
-        if (c !== codes[i]) return nok(c);
-        if (i === 0) effects.enter("docmdMarkup");
-        effects.consume(c);
-        i++;
-        return next;
-      };
-      return next;
-    },
-  };
-}
-
 /** `open`, then any text on one line with backslash escapes, then `close`. Fields escape every `}` of their
- * own, so the first unescaped `}` belongs to `close`: `}}` for tokens, `<<}` for annotations. */
+ * own, so the first unescaped `}` belongs to `close`. */
 function enclosed(open: string, close: string): Construct {
   const opening = code(open);
   const before = code(close.slice(0, close.indexOf("}")));
@@ -95,22 +70,7 @@ function enclosed(open: string, close: string): Construct {
 const constructs = (...cs: Construct[]) => cs;
 
 /** The micromark syntax extension. */
-export const docmdSyntax: Extension = {
-  text: {
-    123: constructs(
-      enclosed("{{", "}}"),
-      enclosed("{>>", "<<}"),
-      sequence("{++"),
-      sequence("{--"),
-      sequence("{~~"),
-      sequence("{=="),
-    ),
-    43: sequence("++}"),
-    45: sequence("--}"),
-    61: sequence("==}"),
-    126: constructs(sequence("~~}"), sequence("~>")),
-  },
-};
+export const docmdSyntax: Extension = { text: { 123: constructs(enclosed("{{", "}}")) } };
 
 /** The mdast extension: each piece of markup is an `html` node with its source. */
 export const docmdFromMarkdown: FromMarkdownExtension = {

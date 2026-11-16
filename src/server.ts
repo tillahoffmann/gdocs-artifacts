@@ -40,11 +40,14 @@ export async function serve(version: string) {
     {
       description:
         "Read one tab of a Google Doc as Markdown. Open comment threads and pending suggestions are inline as " +
-        "CriticMarkup: {==quoted text==}{>>c:<threadId> Author: text · Author: reply<<}, and {++inserted++}, " +
-        "{--deleted--} or {~~old~>new~~} followed by {>>s:<suggestionId><<}. People are @[Name](mailto:email); " +
-        "dates, Drive links and dropdowns are {{date:…}}, {{link:<url>|<title>}} and {{dropdown:<title>=<option>}}; " +
-        "anything else without a Markdown form is {{opaque:<kind>:<id>}}. A line break within a paragraph is " +
-        "{{br}}. Literal { in doc text is escaped as \\{.",
+        "CriticMarkup: {==quoted text==}{>>@Author: text<<}{>>@Author: reply<<} (a resolved thread's first comment " +
+        "is @Author; resolved:), and {++inserted++}, {--deleted--} or {~~old~>new~~} followed by who suggested " +
+        "it, {>>@Author<<} (a suggested heading or list change is one of the paragraph's whole line). People " +
+        "are @[Name](mailto:email); dates, Drive links and dropdowns are {{date:…}}, " +
+        "{{link:<url>|<title>}} and {{dropdown:<title>=<option>}}; anything else without a Markdown form is " +
+        "{{opaque:<kind>:<id>}}; a paragraph docmd can't show (some suggestions in code, say) is " +
+        "{{opaque:paragraph:<its text>}}, which edits can keep or remove but not change. A line break is <br>. " +
+        "Literal { and \\ in doc text are escaped as \\{ and \\\\.",
       inputSchema: {
         doc,
         tab: z.string().optional().describe("Tab ID; defaults to the first tab"),
@@ -131,16 +134,21 @@ export async function serve(version: string) {
       description:
         "Edit one tab of a Google Doc by replacing text in its docmd (the Markdown that read returns). Each " +
         "edit replaces `old`, which must match exactly once (or pass nth), with `new`; edits apply in order. " +
-        "Copy old as read shows it, comment markup included; comments are read-only, so keep {==, ==} and " +
-        "{>>c:…<<} as they are (a thread may be shortened to {>>c:<id><<}). Formatting is Markdown: **bold**, " +
-        "*italic*, ~~strike~~, `code`, [links](url), # headings, new paragraphs and list items. By default " +
-        "changes are suggestions the doc's editors accept or reject, written in CriticMarkup without an ID: " +
-        "{++added++}, {--removed--}, {~~old~>new~~}, and formatting as {~~word~>**word**~~}; a new paragraph " +
-        "or list item is all {++…++}. Text outside the markup stays as read shows it. The doc then reads as " +
-        'written, with IDs on the new suggestions. In mode "direct" (only when the user asked for direct ' +
-        "edits) write the change itself. Leave pending suggestions (with their {>>s:…<<}) as they are. Text " +
-        "with open comments can be edited, but removing all of a thread's text is refused unless allowDetach " +
-        "names the thread (it stays, unanchored); use that only when the user asked for the text to go. " +
+        "Copy old as read shows it, comment markup included. Formatting is Markdown: **bold**, *italic*, " +
+        "~~strike~~, `code`, [links](url), # headings, new paragraphs and list items. By default changes are " +
+        "suggestions the doc's editors accept or reject, written in CriticMarkup: {++added++}, {--removed--}, " +
+        "{~~old~>new~~}, and formatting as {~~word~>**word**~~}; a new paragraph or list item is all {++…++}, " +
+        "and a heading or list change is a change of the whole line, {~~## Title~>### Title~~}, on its own " +
+        "between blank lines (CriticMarkup is read over the text: with every change accepted, and rejected, it " +
+        "must be Markdown that says what's meant). Text outside the markup stays as read shows it, and the doc " +
+        'then reads as written. In mode "direct" (only when the user asked for direct edits) write the change ' +
+        "itself. Comments and pending suggestions are edits too, in either mode: {==text==}{>>comment<<} adds a " +
+        "comment, and {>>reply<<} after a thread's last comment replies to it (both without @Author: they're " +
+        "yours); removing a thread's highlight and comments resolves it; removing a pending suggestion's markup " +
+        "(its {>>@Author<<} can go or stay) accepts it if its new text stays, or rejects it if its old text " +
+        "stays. Otherwise leave threads and pending suggestions as they are. Text " +
+        "with open comments can be edited, but removing all of a thread's text is refused without allowDetach " +
+        "(the thread stays, without its text); pass it only when the user asked for the text to go. " +
         "Returns the changed lines.",
       inputSchema: {
         doc,
@@ -155,7 +163,10 @@ export async function serve(version: string) {
             }),
           )
           .min(1),
-        allowDetach: z.array(z.string()).optional().describe("Comment thread IDs whose text may go"),
+        allowDetach: z
+          .boolean()
+          .optional()
+          .describe("Whether text with comments may go entirely (its threads stay, unanchored)"),
       },
     },
     ({ doc: d, ...opts }) => run(() => edit(connect(), docId(d), opts)),
